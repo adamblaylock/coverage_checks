@@ -1,0 +1,16 @@
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: fcc_postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: fcc_coverage
+      POSTGRES_USER: fcc
+      POSTGRES_PASSWORD: fcc
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
