@@ -151,10 +151,18 @@ def main():
     with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute('ANALYZE fcc.mobile_coverage')
         if a.subdivide:
+            state_count=len(states)
+            state_word='state' if state_count == 1 else 'states'
+            print(f'Subdividing coverage polygons for {state_count:,} {state_word}...')
             conn.execute('DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = ANY(%s)',(list(states),))
-            conn.execute("""INSERT INTO fcc.mobile_coverage_subdivided (coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,geom)
+            inserted=conn.execute("""INSERT INTO fcc.mobile_coverage_subdivided (coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,geom)
                 SELECT coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,(ST_Dump(ST_Subdivide(geom,256))).geom::geometry(Polygon,4326)
                 FROM fcc.mobile_coverage WHERE state_code = ANY(%s)""",(list(states),))
             conn.execute('ANALYZE fcc.mobile_coverage_subdivided')
+            inserted_count=inserted.rowcount
+            if inserted_count >= 0:
+                print(f'Coverage polygon subdivision complete. {inserted_count:,} subdivided rows created.')
+            else:
+                print('Coverage polygon subdivision complete.')
     print(f'Complete: {imported:,} coverage polygons imported.')
 if __name__=='__main__': main()
