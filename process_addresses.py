@@ -282,8 +282,8 @@ def upsert_geocodes(conn: psycopg.Connection, rows: list[tuple], metadata: dict[
             VALUES
             (
                 %s, %s, %s, %s, %s,
-                CASE WHEN %s IS NULL OR %s IS NULL THEN NULL
-                     ELSE ST_SetSRID(ST_MakePoint(%s, %s), 4326) END,
+                CASE WHEN %s::double precision IS NULL OR %s::double precision IS NULL THEN NULL
+                     ELSE ST_SetSRID(ST_MakePoint(%s::double precision, %s::double precision), 4326) END,
                 %s, %s, %s, %s, %s, %s, %s, %s
             )
             ON CONFLICT (address_hash) DO UPDATE SET

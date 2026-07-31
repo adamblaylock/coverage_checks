@@ -90,7 +90,7 @@ class Client:
                     for chunk in r.iter_content(1024*1024):
                         if chunk:f.write(chunk)
                 part.replace(dest); return
-            except Exception: continue
+            except Exception as e: print(f'[download] fid={fid} url={url} err={e}'); continue
         raise FCCError(f'Unable to download FCC file {fid}')
 
 def text(r):return ' '.join(str(v) for v in r.values() if not isinstance(v,(dict,list)) and v is not None).lower()
