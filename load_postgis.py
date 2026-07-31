@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, os, re, sys
+import argparse, csv, io, os, re, sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 import psycopg
-from sqlalchemy import create_engine
 from shapely.geometry import MultiPolygon
+from shapely import wkb
 from dotenv import load_dotenv
 from extract_states import extract_states
 
@@ -38,24 +38,53 @@ def normalize(gdf:gpd.GeoDataFrame,state:str,release_id:str,source:str):
     gdf=gdf[keep].copy()
     gdf=gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
     if gdf.crs is None: raise ValueError(f'{source} has no CRS')
-    gdf=gdf.to_crs(4326)
-    gdf.geometry=gdf.geometry.make_valid()
+    if gdf.crs.to_epsg() != 4326: gdf=gdf.to_crs(4326)
+    invalid_mask=~gdf.geometry.is_valid
+    if invalid_mask.any(): gdf.loc[invalid_mask,gdf.geometry.name]=gdf.loc[invalid_mask,gdf.geometry.name].make_valid()
     gdf=gdf.explode(index_parts=False, ignore_index=True)
     gdf=gdf[gdf.geom_type.isin(['Polygon','MultiPolygon'])]
-    gdf.geometry=gdf.geometry.apply(lambda x: x if x.geom_type=='MultiPolygon' else MultiPolygon([x]))
+    is_polygon=gdf.geom_type=='Polygon'
+    if is_polygon.any(): gdf.loc[is_polygon,gdf.geometry.name]=gdf.loc[is_polygon,gdf.geometry.name].apply(lambda g: MultiPolygon([g]))
     for col in ('mindown','minup','minsignal'): gdf[col]=pd.to_numeric(gdf[col],errors='coerce')
     gdf['state_code']=state; gdf['release_id']=release_id; gdf['source_file']=source
     return gdf[['state_code','release_id','frn','providerid','brandname','technology','mindown','minup','minsignal','environmnt','source_file',geom_name]].rename_geometry('geom')
+
+def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:int)->None:
+    output=io.StringIO()
+    writer=csv.writer(output,lineterminator='\n')
+    flush_every=max(chunksize,1)
+    with conn.cursor() as cur:
+        with cur.copy("COPY fcc.mobile_coverage (state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom) FROM STDIN WITH CSV") as copy:
+            for idx,row in enumerate(gdf.itertuples(index=False,name=None),1):
+                state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom=row
+                writer.writerow([
+                    None if pd.isna(state_code) else state_code,
+                    None if pd.isna(release_id) else release_id,
+                    None if pd.isna(frn) else frn,
+                    None if pd.isna(providerid) else providerid,
+                    None if pd.isna(brandname) else brandname,
+                    None if pd.isna(technology) else technology,
+                    None if pd.isna(mindown) else mindown,
+                    None if pd.isna(minup) else minup,
+                    None if pd.isna(minsignal) else minsignal,
+                    None if pd.isna(environmnt) else environmnt,
+                    None if pd.isna(source_file) else source_file,
+                    wkb.dumps(geom,hex=True,srid=4326),
+                ])
+                if idx % flush_every == 0:
+                    output.seek(0)
+                    while data:=output.read(1024*1024): copy.write(data)
+                    output.seek(0); output.truncate(0)
+            output.seek(0)
+            while data:=output.read(1024*1024): copy.write(data)
+    conn.commit()
 
 def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw:dict[str,str])->int:
     try:
         gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
         gdf=normalize(gdf,state,release_id,Path(path).name)
-        engine=create_engine('postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}'.format(**conn_kw))
-        try:
-            gdf.to_postgis('mobile_coverage',engine,schema='fcc',if_exists='append',index=False,chunksize=chunksize)
-        finally:
-            engine.dispose()
+        with psycopg.connect(**conn_kw) as conn:
+            copy_mobile_coverage(gdf,conn,chunksize)
         return len(gdf)
     except Exception as exc:
         raise RuntimeError(f'Failed to import {Path(path).name}:{layer}: {exc}') from exc
