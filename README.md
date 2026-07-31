@@ -149,6 +149,27 @@ The row is retained and carrier columns return `FAIL`, because qualifying carrie
 
 Run the same `make run` command again. Valid downloads, geocodes, and coverage results are reused automatically.
 
+### `make run` hangs at `init_database.py`
+
+In rare cases (for example, a network partition or killed worker during PostgreSQL `COPY`), an orphaned backend can remain active and hold locks that block schema initialization.
+
+Check active sessions:
+
+```sql
+SELECT pid, state, query
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND state != 'idle';
+```
+
+Terminate the stuck backend:
+
+```sql
+SELECT pg_terminate_backend(<pid>);
+```
+
+The pipeline now sets statement and idle-in-transaction timeouts on `COPY` sessions and schema initialization to reduce the chance of indefinite hangs, but this check is still useful for diagnosis and recovery.
+
 ## Census attribution
 
 This product uses the Census Bureau Geocoding Services API but is not endorsed or certified by the Census Bureau.

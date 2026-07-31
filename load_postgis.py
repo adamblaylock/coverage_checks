@@ -20,6 +20,12 @@ def dbkw():
     out['password']=os.getenv('POSTGRES_PASSWORD','fcc')
     return out
 
+def pg_statement_timeout_ms()->int:
+    return int(os.getenv('PG_STATEMENT_TIMEOUT_MS','600000'))
+
+def pg_idle_in_transaction_timeout_ms()->int:
+    return int(os.getenv('PG_IDLE_IN_TRANSACTION_TIMEOUT_MS','300000'))
+
 def state_from_name(path: Path)->str:
     m=re.search(r'(?:^|_)bdc_(\d{2})_',path.name,re.I)
     if not m or m.group(1) not in FIPS_TO_STATE: raise ValueError(f'Cannot determine state FIPS from {path.name}')
@@ -80,14 +86,28 @@ def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:
     conn.commit()
 
 def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw:dict[str,str])->int:
+    conn=None
     try:
         gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
         gdf=normalize(gdf,state,release_id,Path(path).name)
-        with psycopg.connect(**conn_kw) as conn:
-            copy_mobile_coverage(gdf,conn,chunksize)
+        conn=psycopg.connect(**conn_kw)
+        conn.execute("SELECT set_config('statement_timeout', %s, false)",(f"{pg_statement_timeout_ms()}ms",))
+        conn.execute("SELECT set_config('idle_in_transaction_session_timeout', %s, false)",(f"{pg_idle_in_transaction_timeout_ms()}ms",))
+        copy_mobile_coverage(gdf,conn,chunksize)
         return len(gdf)
     except Exception as exc:
+        if conn is not None and not conn.closed:
+            try: conn.rollback()
+            except Exception: pass
         raise RuntimeError(f'Failed to import {Path(path).name}:{layer}: {exc}') from exc
+    except BaseException:
+        if conn is not None and not conn.closed:
+            try: conn.rollback()
+            except Exception: pass
+        raise
+    finally:
+        if conn is not None and not conn.closed:
+            conn.close()
 
 def main():
     p=argparse.ArgumentParser(); p.add_argument('--coverage-dir',type=Path,default=Path('data/coverage')); p.add_argument('--input',type=Path); p.add_argument('--release-id',default='current'); p.add_argument('--replace-states',action='store_true'); p.add_argument('--subdivide',action='store_true'); p.add_argument('--chunksize',type=int,default=100_000); p.add_argument('--workers',type=int,default=(os.cpu_count() or 1)); a=p.parse_args()
