@@ -108,7 +108,31 @@ def read_input(path: Path, chunk_size: int) -> pd.DataFrame:
         chunk["state"] = chunk["state"].str.strip()
         chunk["zip"] = chunk["zip"].map(normalize_zip)
         chunk["state_code"] = chunk["state"].map(normalize_state)
-        chunk["normalized_address"] = chunk.apply(normalized_address, axis=1)
+        address_clean = (
+            chunk["address"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+            .str.upper()
+        )
+        city_clean = (
+            chunk["city"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.replace(r"\s+", " ", regex=True)
+            .str.upper()
+        )
+        chunk["normalized_address"] = (
+            address_clean
+            + "|"
+            + city_clean
+            + "|"
+            + chunk["state_code"].fillna("").astype(str)
+            + "|"
+            + chunk["zip"].fillna("").astype(str)
+        )
         chunk["address_hash"] = chunk["normalized_address"].map(address_hash)
         chunks.append(chunk)
 
@@ -434,12 +458,15 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
             (
                 SELECT a.address_hash, a.state_code, a.geom, carrier.carrier_code
                 FROM addresses a
-                CROSS JOIN (VALUES ('att'), ('tmo'), ('vzw')) carrier(carrier_code)
-                LEFT JOIN processing.address_coverage_cache cache
-                  ON cache.address_hash = a.address_hash
-                 AND cache.release_id = %s
-                 AND cache.carrier_code = carrier.carrier_code
-                WHERE cache.address_hash IS NULL
+                CROSS JOIN LATERAL unnest(ARRAY['att', 'tmo', 'vzw']) AS carrier(carrier_code)
+                WHERE NOT EXISTS
+                (
+                    SELECT 1
+                    FROM processing.address_coverage_cache cache
+                    WHERE cache.address_hash = a.address_hash
+                      AND cache.release_id = %s
+                      AND cache.carrier_code = carrier.carrier_code
+                )
             ),
             hits AS
             (
