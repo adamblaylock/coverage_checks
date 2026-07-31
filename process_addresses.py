@@ -57,6 +57,14 @@ def dbkw() -> dict[str, str]:
     }
 
 
+def pg_statement_timeout_ms() -> int:
+    return int(os.getenv("PG_STATEMENT_TIMEOUT_MS", "600000"))
+
+
+def pg_idle_in_transaction_timeout_ms() -> int:
+    return int(os.getenv("PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "300000"))
+
+
 def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip()).upper()
 
@@ -399,6 +407,14 @@ def geocode_uncached(df: pd.DataFrame, conn: psycopg.Connection, batch_size: int
 
 
 def copy_batch(df: pd.DataFrame, conn: psycopg.Connection, batch_id: uuid.UUID) -> None:
+    conn.execute(
+        "SELECT set_config('statement_timeout', %s, false)",
+        (f"{pg_statement_timeout_ms()}ms",),
+    )
+    conn.execute(
+        "SELECT set_config('idle_in_transaction_session_timeout', %s, false)",
+        (f"{pg_idle_in_transaction_timeout_ms()}ms",),
+    )
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
     for row in df.itertuples(index=False):
