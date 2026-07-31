@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import argparse, os, re, sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import geopandas as gpd
 import pandas as pd
@@ -15,7 +16,9 @@ EXPECTED={'frn','providerid','brandname','technology','mindown','minup','minsign
 FIPS_TO_STATE={'01':'AL','02':'AK','04':'AZ','05':'AR','06':'CA','08':'CO','09':'CT','10':'DE','11':'DC','12':'FL','13':'GA','15':'HI','16':'ID','17':'IL','18':'IN','19':'IA','20':'KS','21':'KY','22':'LA','23':'ME','24':'MD','25':'MA','26':'MI','27':'MN','28':'MS','29':'MO','30':'MT','31':'NE','32':'NV','33':'NH','34':'NJ','35':'NM','36':'NY','37':'NC','38':'ND','39':'OH','40':'OK','41':'OR','42':'PA','44':'RI','45':'SC','46':'SD','47':'TN','48':'TX','49':'UT','50':'VT','51':'VA','53':'WA','54':'WV','55':'WI','56':'WY','60':'AS','66':'GU','69':'MP','72':'PR','78':'VI'}
 
 def dbkw():
-    return dict(host=os.getenv('POSTGRES_HOST','localhost'),port=os.getenv('POSTGRES_PORT','5432'),dbname=os.getenv('POSTGRES_DB','fcc_coverage'),user=os.getenv('POSTGRES_USER','fcc'),password=os.getenv('POSTGRES_PASSWORD','fcc'))
+    out=dict(host=os.getenv('POSTGRES_HOST','localhost'),port=os.getenv('POSTGRES_PORT','5432'),dbname=os.getenv('POSTGRES_DB','fcc_coverage'),user=os.getenv('POSTGRES_USER','fcc'))
+    out['password']=os.getenv('POSTGRES_PASSWORD','fcc')
+    return out
 
 def state_from_name(path: Path)->str:
     m=re.search(r'(?:^|_)bdc_(\d{2})_',path.name,re.I)
@@ -44,27 +47,53 @@ def normalize(gdf:gpd.GeoDataFrame,state:str,release_id:str,source:str):
     gdf['state_code']=state; gdf['release_id']=release_id; gdf['source_file']=source
     return gdf[['state_code','release_id','frn','providerid','brandname','technology','mindown','minup','minsignal','environmnt','source_file',geom_name]].rename_geometry('geom')
 
+def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw:dict[str,str])->int:
+    try:
+        gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
+        gdf=normalize(gdf,state,release_id,Path(path).name)
+        engine=create_engine('postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}'.format(**conn_kw))
+        try:
+            gdf.to_postgis('mobile_coverage',engine,schema='fcc',if_exists='append',index=False,chunksize=chunksize)
+        finally:
+            engine.dispose()
+        return len(gdf)
+    except Exception as exc:
+        raise RuntimeError(f'Failed to import {Path(path).name}:{layer}: {exc}') from exc
+
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--coverage-dir',type=Path,default=Path('data/coverage')); p.add_argument('--input',type=Path); p.add_argument('--release-id',default='current'); p.add_argument('--replace-states',action='store_true'); p.add_argument('--subdivide',action='store_true'); p.add_argument('--chunksize',type=int,default=100_000); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--coverage-dir',type=Path,default=Path('data/coverage')); p.add_argument('--input',type=Path); p.add_argument('--release-id',default='current'); p.add_argument('--replace-states',action='store_true'); p.add_argument('--subdivide',action='store_true'); p.add_argument('--chunksize',type=int,default=100_000); p.add_argument('--workers',type=int,default=(os.cpu_count() or 1)); a=p.parse_args()
+    if a.workers < 1: raise SystemExit('--workers must be at least 1')
     paths=sorted([*a.coverage_dir.glob('*.gpkg'),*a.coverage_dir.glob('*.shp')])
     states=set(extract_states(a.input)) if a.input else {state_from_name(x) for x in paths}
     paths=[x for x in paths if state_from_name(x) in states]
     if not paths: raise SystemExit('No matching coverage files found.')
-    engine=create_engine('postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}'.format(**dbkw()))
-    with psycopg.connect(**dbkw(),autocommit=True) as conn:
+    conn_kw=dbkw()
+    with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute(Path('sql/001_schema.sql').read_text())
         if a.replace_states:
             conn.execute('DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = ANY(%s)',(list(states),))
             conn.execute('DELETE FROM fcc.mobile_coverage WHERE state_code = ANY(%s)',(list(states),))
     imported=0
+    jobs=[]
     for path in paths:
         state=state_from_name(path)
         for layer in layers(path):
-            gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
-            gdf=normalize(gdf,state,a.release_id,path.name)
-            gdf.to_postgis('mobile_coverage',engine,schema='fcc',if_exists='append',index=False,chunksize=a.chunksize)
-            imported+=len(gdf); print(f'Imported {len(gdf):,} rows from {path.name}:{layer}')
-    with psycopg.connect(**dbkw(),autocommit=True) as conn:
+            jobs.append((str(path),layer,state,path.name))
+    if a.workers == 1:
+        for path,layer,state,path_name in jobs:
+            count=load_layer(path,layer,state,a.release_id,a.chunksize,conn_kw)
+            imported+=count; print(f'Imported {count:,} rows from {path_name}:{layer}')
+    else:
+        with ProcessPoolExecutor(max_workers=a.workers) as executor:
+            futures={executor.submit(load_layer,path,layer,state,a.release_id,a.chunksize,conn_kw):(path_name,layer) for path,layer,state,path_name in jobs}
+            for future in as_completed(futures):
+                path_name,layer=futures[future]
+                try:
+                    count=future.result()
+                except Exception as exc:
+                    raise RuntimeError(f'Failed processing {path_name}:{layer}') from exc
+                imported+=count; print(f'Imported {count:,} rows from {path_name}:{layer}')
+    with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute('ANALYZE fcc.mobile_coverage')
         if a.subdivide:
             conn.execute('DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = ANY(%s)',(list(states),))

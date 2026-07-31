@@ -83,6 +83,12 @@ Run only the FCC synchronization stage:
 make sync INPUT=addresses.csv
 ```
 
+Run only the PostGIS coverage import with a specific worker count:
+
+```bash
+.venv/bin/python load_postgis.py --input addresses.csv --workers 4
+```
+
 Force fresh downloads:
 
 ```bash
