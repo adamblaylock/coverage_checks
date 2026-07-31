@@ -128,20 +128,26 @@ def main():
         state=state_from_name(path)
         for layer in layers(path):
             jobs.append((str(path),layer,state,path.name))
+    total_jobs=len(jobs)
+    unit='unit' if total_jobs == 1 else 'units'
+    worker_word='worker' if a.workers == 1 else 'workers'
+    print(f'Importing {total_jobs:,} coverage file/layer {unit} with {a.workers} {worker_word}...')
     if a.workers == 1:
-        for path,layer,state,path_name in jobs:
+        for completed,(path,layer,state,path_name) in enumerate(jobs,start=1):
             count=load_layer(path,layer,state,a.release_id,a.chunksize,conn_kw)
-            imported+=count; print(f'Imported {count:,} rows from {path_name}:{layer}')
+            imported+=count
+            print(f'[{completed}/{total_jobs} | {total_jobs-completed} remaining] Imported {count:,} rows from {path_name}:{layer}')
     else:
         with ProcessPoolExecutor(max_workers=a.workers) as executor:
             futures={executor.submit(load_layer,path,layer,state,a.release_id,a.chunksize,conn_kw):(path_name,layer) for path,layer,state,path_name in jobs}
-            for future in as_completed(futures):
+            for completed,future in enumerate(as_completed(futures),start=1):
                 path_name,layer=futures[future]
                 try:
                     count=future.result()
                 except Exception as exc:
                     raise RuntimeError(f'Failed processing {path_name}:{layer}') from exc
-                imported+=count; print(f'Imported {count:,} rows from {path_name}:{layer}')
+                imported+=count
+                print(f'[{completed}/{total_jobs} | {total_jobs-completed} remaining] Imported {count:,} rows from {path_name}:{layer}')
     with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute('ANALYZE fcc.mobile_coverage')
         if a.subdivide:
