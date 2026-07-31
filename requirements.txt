@@ -1,7 +1,9 @@
-psycopg2-binary>=2.9
-requests>=2.31
-python-dotenv>=1.0
-shapely>=2.0
-pyproj>=3.6
-fiona>=1.9
-tqdm>=4.66
+pandas>=2.2,<3
+psycopg[binary]>=3.2,<4
+python-dotenv>=1.0,<2
+pyogrio>=0.9,<1
+geopandas>=1.0,<2
+shapely>=2.0,<3
+SQLAlchemy>=2.0,<3
+GeoAlchemy2>=0.15,<1
+requests>=2.32,<3

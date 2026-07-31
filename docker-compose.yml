@@ -1,17 +1,36 @@
 services:
   postgis:
-    image: imresamu/postgis:16-3.4
-    platform: linux/arm64
-    container_name: fcc_postgis
+    image: postgis/postgis:16-3.4
+    container_name: fcc-coverage-postgis
     restart: unless-stopped
     environment:
-      POSTGRES_DB: fcc_coverage
-      POSTGRES_USER: fcc
-      POSTGRES_PASSWORD: fcc
+      POSTGRES_DB: ${POSTGRES_DB:-fcc_coverage}
+      POSTGRES_USER: ${POSTGRES_USER:-fcc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fcc}
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - fcc_postgis_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fcc} -d ${POSTGRES_DB:-fcc_coverage}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    shm_size: 1gb
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: fcc-coverage-pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgis:
+        condition: service_healthy
 
 volumes:
-  pgdata:
+  fcc_postgis_data:

@@ -1,45 +1,41 @@
-PYTHON := .venv/bin/python
-PIP    := .venv/bin/pip
+.PHONY: install up down status init states sync import process run refresh clean-results
+INPUT ?= addresses_sample.csv
+OUTPUT ?= data/output/coverage_results.csv
+AS_OF ?=
+PROVIDERS ?= att,tmo,vzw
+PYTHON ?= .venv/bin/python
 
-.PHONY: install up down init run sync states clean
-
-install: up
+install:
 	python3 -m venv .venv
-	$(PIP) install --upgrade pip
-	$(PIP) install -r requirements.txt
-	$(MAKE) init
+	$(PYTHON) -m pip install --upgrade pip
+	$(PYTHON) -m pip install -r requirements.txt
+	cp -n .env.example .env || true
+	docker compose up -d
+	$(PYTHON) init_database.py
 
 up:
 	docker compose up -d
-	@echo "Waiting for PostGIS to be ready..."
-	@sleep 5
 
 down:
 	docker compose down
 
+status:
+	docker compose ps
+
 init:
-	$(PYTHON) -c "from db import init_db; init_db()"
-
-run:
-	$(MAKE) up
-	$(MAKE) init
-	$(PYTHON) run_pipeline.py \
-		--input $(INPUT) \
-		--output $(if $(OUTPUT),$(OUTPUT),data/output/coverage_results.csv) \
-		$(if $(AS_OF),--as-of $(AS_OF),)
-
-sync:
-	$(MAKE) up
-	$(MAKE) init
-	$(PYTHON) run_pipeline.py \
-		--input $(INPUT) \
-		--output /dev/null \
-		--sync-only
+	$(PYTHON) init_database.py
 
 states:
-	$(PYTHON) run_pipeline.py --input $(INPUT) --states-only
+	$(PYTHON) -c "from pathlib import Path; from extract_states import extract_states; print(*extract_states(Path('$(INPUT)')), sep='\n')"
 
-clean:
-	rm -rf data/downloads/* data/coverage/* data/catalog/* data/output/*
-	touch data/downloads/.gitkeep data/coverage/.gitkeep \
-	      data/catalog/.gitkeep data/output/.gitkeep
+sync:
+	$(PYTHON) sync_fcc_data.py --input $(INPUT) --providers $(PROVIDERS) $(if $(AS_OF),--as-of $(AS_OF),)
+
+run refresh:
+	$(PYTHON) run_pipeline.py --input $(INPUT) --output $(OUTPUT) --providers $(PROVIDERS) $(if $(AS_OF),--as-of $(AS_OF),)
+
+process:
+	$(PYTHON) process_addresses.py --input $(INPUT) --output $(OUTPUT) --release-id $$(cat data/catalog/selected_release.txt)
+
+clean-results:
+	rm -f data/output/*.csv
