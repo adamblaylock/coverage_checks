@@ -91,8 +91,8 @@ def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw
         gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
         gdf=normalize(gdf,state,release_id,Path(path).name)
         conn=psycopg.connect(**conn_kw)
-        conn.execute("SELECT set_config('statement_timeout', %s, false)",(f"{pg_statement_timeout_ms()}ms",))
-        conn.execute("SELECT set_config('idle_in_transaction_session_timeout', %s, false)",(f"{pg_idle_in_transaction_timeout_ms()}ms",))
+        conn.execute("SELECT set_config('statement_timeout', '0', false)")
+        conn.execute("SELECT set_config('idle_in_transaction_session_timeout', '0', false)")
         copy_mobile_coverage(gdf,conn,chunksize)
         return len(gdf)
     except Exception as exc:
