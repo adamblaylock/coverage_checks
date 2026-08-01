@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, os, subprocess, sys
+import argparse, os, subprocess, sys, time
 from pathlib import Path
 
 def run(*args):
     print('+',' '.join(map(str,args)),flush=True); subprocess.run([str(x) for x in args],check=True)
 def main():
     p=argparse.ArgumentParser(description='Run the complete FCC address coverage workflow.'); p.add_argument('--input',required=True,type=Path); p.add_argument('--output',type=Path,default=Path('data/output/coverage_results.csv')); p.add_argument('--as-of'); p.add_argument('--providers',default='att,tmo,vzw'); p.add_argument('--skip-docker',action='store_true'); p.add_argument('--force-download',action='store_true'); a=p.parse_args()
+    t0=time.monotonic()
     py=Path(sys.executable)
     if not a.skip_docker:run('docker','compose','up','-d')
     run(py,'init_database.py')
@@ -18,4 +19,6 @@ def main():
     run(py,'load_postgis.py','--coverage-dir',coverage,'--input',a.input,'--release-id',release,'--replace-states','--subdivide')
     run(py,'process_addresses.py','--input',a.input,'--output',a.output,'--release-id',release)
     print(f'Complete: {a.output}')
+    elapsed=time.monotonic()-t0
+    print(f'Duration: {elapsed:.1f}s')
 if __name__=='__main__':main()
