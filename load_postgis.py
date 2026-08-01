@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, csv, io, os, re, sys
+import argparse, csv, hashlib, io, json, os, re, sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from uuid import uuid4
@@ -35,6 +35,50 @@ def state_from_name(path: Path)->str:
 def layers(path:Path):
     import pyogrio
     return [x[0] for x in pyogrio.list_layers(path)]
+
+def digest(path:Path)->str:
+    h=hashlib.sha256()
+    with path.open('rb') as f:
+        for c in iter(lambda:f.read(1024*1024),b''): h.update(c)
+    return h.hexdigest()
+
+def release_safe(release_id:str)->str:
+    return re.sub(r'[^0-9A-Za-z_-]+','_',release_id)
+
+def load_source_hashes(release_id:str,catalog_dir:Path=Path('data/catalog'))->dict[str,str]:
+    path=catalog_dir/f'sync_manifest_{release_safe(release_id)}.json'
+    if not path.exists(): return {}
+    try:
+        payload=json.loads(path.read_text())
+    except Exception:
+        return {}
+    out={}
+    if not isinstance(payload,list): return out
+    for row in payload:
+        if not isinstance(row,dict): continue
+        sha=str(row.get('sha256') or '').strip()
+        if not sha: continue
+        for extracted in row.get('extracted_files',[]):
+            out[Path(str(extracted)).name]=sha
+    return out
+
+def skip_reload(conn:psycopg.Connection,entries:list[dict[str,object]],release_id:str,subdivide:bool)->bool:
+    if not entries: return False
+    states=sorted({str(x['state_code']) for x in entries})
+    loaded={r[0] for r in conn.execute('SELECT DISTINCT state_code FROM fcc.mobile_coverage WHERE release_id = %s AND state_code = ANY(%s)',(release_id,states))}
+    if loaded != set(states): return False
+    if subdivide:
+        subdivided={r[0] for r in conn.execute('SELECT DISTINCT state_code FROM fcc.mobile_coverage_subdivided WHERE release_id = %s AND state_code = ANY(%s)',(release_id,states))}
+        if subdivided != set(states): return False
+    rows=conn.execute('SELECT state_code,source_path,source_sha256,layer_names,subdivided FROM fcc.coverage_import_manifest WHERE release_id = %s AND state_code = ANY(%s)',(release_id,states)).fetchall()
+    by_key={(state_code,source_path):(source_sha256,tuple(layer_names),row_subdivided) for state_code,source_path,source_sha256,layer_names,row_subdivided in rows}
+    for entry in entries:
+        key=(str(entry['state_code']),str(entry['source_path']))
+        found=by_key.get(key)
+        if not found: return False
+        if found[0] != entry['source_sha256'] or found[1] != tuple(entry['layer_names']): return False
+        if subdivide and not found[2]: return False
+    return len(by_key) == len(entries)
 
 def normalize(gdf:gpd.GeoDataFrame,state:str,release_id:str,source:str):
     gdf.columns=[str(c).lower() for c in gdf.columns]
@@ -127,15 +171,24 @@ def main():
     paths=[x for x in paths if state_from_name(x) in states]
     if not paths: raise SystemExit('No matching coverage files found.')
     conn_kw=dbkw()
+    source_hashes=load_source_hashes(a.release_id)
     load_id=str(uuid4())
+    path_layers={}
+    manifest_entries=[]
     with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute(Path('sql/001_schema.sql').read_text())
         conn.execute('DELETE FROM fcc.mobile_coverage_staging WHERE load_id = %s',(load_id,))
+        for path in paths:
+            layer_names=layers(path); path_layers[path]=layer_names
+            manifest_entries.append({'state_code':state_from_name(path),'source_path':path.name,'source_sha256':source_hashes.get(path.name) or digest(path),'layer_names':layer_names})
+        if a.replace_states and skip_reload(conn,manifest_entries,a.release_id,a.subdivide):
+            print(f'Coverage import unchanged for release {a.release_id}; skipping reload.')
+            return
     imported=0
     jobs=[]
     for path in paths:
         state=state_from_name(path)
-        for layer in layers(path):
+        for layer in path_layers[path]:
             jobs.append((str(path),layer,state,path.name))
     total_jobs=len(jobs)
     unit='unit' if total_jobs == 1 else 'units'
@@ -197,5 +250,10 @@ def main():
                 print(f'Coverage polygon subdivision complete. {inserted_count:,} subdivided rows created.')
             else:
                 print('Coverage polygon subdivision complete.')
+        if a.replace_states:
+            conn.execute('DELETE FROM fcc.coverage_import_manifest WHERE state_code = ANY(%s) AND release_id = %s',(state_list,a.release_id))
+            with conn.cursor() as cur:
+                cur.executemany('INSERT INTO fcc.coverage_import_manifest (release_id,state_code,source_path,source_sha256,layer_names,subdivided) VALUES (%s,%s,%s,%s,%s,%s)',[(a.release_id,str(x['state_code']),str(x['source_path']),str(x['source_sha256']),list(x['layer_names']),a.subdivide) for x in manifest_entries])
+            conn.commit()
     print(f'Complete: {imported:,} coverage polygons imported.')
 if __name__=='__main__': main()

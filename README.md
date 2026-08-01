@@ -103,8 +103,10 @@ Force fresh downloads:
 The process avoids unnecessary work:
 
 - Existing valid FCC archives are reused.
+- Existing extracted GIS files are reused when the cached archive is unchanged.
 - FCC data is stored by availability release.
 - Only states present in the current address file are downloaded and imported.
+- Coverage reloads are skipped when the same release/state files were already imported and subdivided.
 - Duplicate addresses are geocoded once.
 - Geocodes persist across files and runs.
 - Coverage results are cached by normalized address and FCC release.
@@ -172,6 +174,7 @@ The row is retained and carrier columns return `FAIL`, because qualifying carrie
 ### Restarting an interrupted run
 
 Run the same `make run` command again. Valid downloads, geocodes, and coverage results are reused automatically.
+If the selected FCC release and state files are unchanged, the coverage import step also skips reloading and rebuilding subdivided polygons.
 
 ### `make run` hangs at `init_database.py`
 
