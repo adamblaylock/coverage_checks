@@ -119,8 +119,10 @@ A carrier passes when a qualifying FCC polygon covers the geocoded point and:
 
 ```text
 mindown >= 5 Mbps
-minsignal - 18 dB >= -105 dBm
+minsignal - 18 dB >= -115 dBm
 ```
+
+The 18 dB term is a fixed indoor signal-loss estimate. The resulting indoor minimum of **−115 dBm** is used as a basic device-connectivity screen: it identifies locations where a cellular device would have difficulty attaching to the network at all. It is not a reliable indicator of video-call or streaming quality. For the FCC-reported outdoor `minsignal` this means the polygon must report at least **−97 dBm** before the indoor-loss adjustment is applied.
 
 `ST_Covers` is used so points on polygon boundaries are included.
 
