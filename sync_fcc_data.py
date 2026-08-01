@@ -113,6 +113,27 @@ def digest(path):
     with path.open('rb') as f:
         for c in iter(lambda:f.read(1024*1024),b''):h.update(c)
     return h.hexdigest()
+def load_manifest(path):
+    try:
+        payload=json.loads(path.read_text())
+    except Exception:
+        return {}
+    if not isinstance(payload,list): return {}
+    out={}
+    for row in payload:
+        if not isinstance(row,dict): continue
+        download=row.get('download_path')
+        if not download: continue
+        out[Path(str(download)).name]=row
+    return out
+def reusable(row,path):
+    try:
+        stat=path.stat()
+    except FileNotFoundError:
+        return False
+    if row.get('download_size') != stat.st_size or row.get('download_mtime_ns') != stat.st_mtime_ns: return False
+    extracted=[Path(str(x)) for x in row.get('extracted_files',[]) if x]
+    return bool(row.get('sha256')) and bool(extracted) and all(x.exists() for x in extracted)
 def extract(path,out):
     out.mkdir(parents=True,exist_ok=True)
     with path.open('rb') as f:isdb=f.read(len(SQLITE))==SQLITE
@@ -163,6 +184,8 @@ def main():
     if not chosen:
         diag=a.catalog_dir/'unmatched_catalog.json'; diag.write_text(json.dumps(catalog,indent=2,default=str)); raise SystemExit(f'No matching FCC files found. Inspect {diag}.')
     safe=re.sub(r'[^0-9A-Za-z_-]+','_',chosen); coverage=a.coverage_root/safe; coverage.mkdir(parents=True,exist_ok=True); a.download_dir.mkdir(parents=True,exist_ok=True)
+    manifest_path=a.catalog_dir/f'sync_manifest_{safe}.json'
+    prior=load_manifest(manifest_path) if not a.force and manifest_path.exists() else {}
     manifest=[]
     def fetch(r):
         dest=a.download_dir/filename(r)
@@ -174,6 +197,12 @@ def main():
         return r,dest,downloaded
     with ThreadPoolExecutor(max_workers=max(1,a.workers)) as ex:
         for fut in as_completed([ex.submit(fetch,r) for r in selected]):
-            r,path,downloaded=fut.result(); extracted=extract(path,coverage); manifest.append({'as_of_date':chosen,'downloaded':downloaded,'download_path':str(path),'sha256':digest(path),'extracted_files':[str(x) for x in extracted],'catalog_record':r}); print(('DOWNLOADED' if downloaded else 'CACHED'),path.name)
-    (a.catalog_dir/f'sync_manifest_{safe}.json').write_text(json.dumps(manifest,indent=2,default=str)); (a.catalog_dir/'selected_release.txt').write_text(chosen+'\n'); print(f'FCC_RELEASE={chosen}'); print(f'COVERAGE_DIR={coverage}')
+            r,path,downloaded=fut.result(); cached=prior.get(path.name)
+            if not downloaded and cached and reusable(cached,path):
+                extracted=[Path(str(x)) for x in cached['extracted_files']]; sha=cached['sha256']; reused=True
+            else:
+                extracted=extract(path,coverage); sha=digest(path); reused=False
+            stat=path.stat()
+            manifest.append({'as_of_date':chosen,'downloaded':downloaded,'download_path':str(path),'download_size':stat.st_size,'download_mtime_ns':stat.st_mtime_ns,'sha256':sha,'extracted_files':[str(x) for x in extracted],'catalog_record':r}); print('DOWNLOADED' if downloaded else ('REUSED' if reused else 'CACHED'),path.name)
+    manifest_path.write_text(json.dumps(manifest,indent=2,default=str)); (a.catalog_dir/'selected_release.txt').write_text(chosen+'\n'); print(f'FCC_RELEASE={chosen}'); print(f'COVERAGE_DIR={coverage}')
 if __name__=='__main__':main()

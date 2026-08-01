@@ -39,6 +39,19 @@ CREATE TABLE IF NOT EXISTS fcc.mobile_coverage_staging (
 CREATE INDEX IF NOT EXISTS mobile_coverage_staging_load_idx
     ON fcc.mobile_coverage_staging (load_id);
 
+CREATE TABLE IF NOT EXISTS fcc.coverage_import_manifest (
+    release_id text NOT NULL,
+    state_code text NOT NULL,
+    source_path text NOT NULL,
+    source_sha256 text NOT NULL,
+    layer_names text[] NOT NULL,
+    subdivided boolean NOT NULL DEFAULT false,
+    imported_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (release_id, state_code, source_path)
+);
+CREATE INDEX IF NOT EXISTS coverage_import_manifest_release_state_idx
+    ON fcc.coverage_import_manifest (release_id, state_code);
+
 CREATE TABLE IF NOT EXISTS fcc.mobile_coverage_subdivided (
     coverage_id bigint NOT NULL,
     state_code text NOT NULL,
