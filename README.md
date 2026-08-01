@@ -55,7 +55,7 @@ That command automatically:
 7. Downloads only missing or invalid files and resumes partial downloads when supported.
 8. Extracts GeoPackages or complete shapefiles into a release-specific directory.
 9. Records API catalogs, SHA-256 checksums, and a download manifest.
-10. Imports the selected release into PostGIS and replaces only the states in the current file.
+10. Imports the selected release into PostGIS and replaces only matching state rows for that same release.
 11. Reprojects and validates geometries, builds subdivided polygon tables, GiST indexes, and statistics.
 12. Normalizes and deduplicates addresses.
 13. Reuses cached geocodes and sends only new unique addresses to the Census batch geocoder.
