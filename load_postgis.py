@@ -110,7 +110,7 @@ def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw
             conn.close()
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('--coverage-dir',type=Path,default=Path('data/coverage')); p.add_argument('--input',type=Path); p.add_argument('--release-id',default='current'); p.add_argument('--replace-states',action='store_true'); p.add_argument('--subdivide',action='store_true'); p.add_argument('--chunksize',type=int,default=100_000); p.add_argument('--workers',type=int,default=(os.cpu_count() or 1)); a=p.parse_args()
+    p=argparse.ArgumentParser(); p.add_argument('--coverage-dir',type=Path,default=Path('data/coverage')); p.add_argument('--input',type=Path); p.add_argument('--release-id',default='current'); p.add_argument('--replace-states',action='store_true'); p.add_argument('--subdivide',action='store_true'); p.add_argument('--chunksize',type=int,default=100_000); p.add_argument('--workers',type=int,default=2,help='Number of parallel import workers (default: 2; use 1 for sequential). Increase for faster imports on well-resourced hosts, e.g. --workers 4.'); a=p.parse_args()
     if a.workers < 1: raise SystemExit('--workers must be at least 1')
     paths=sorted([*a.coverage_dir.glob('*.gpkg'),*a.coverage_dir.glob('*.shp')])
     states=set(extract_states(a.input)) if a.input else {state_from_name(x) for x in paths}
