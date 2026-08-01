@@ -21,6 +21,24 @@ CREATE INDEX IF NOT EXISTS mobile_coverage_geom_gix ON fcc.mobile_coverage USING
 CREATE INDEX IF NOT EXISTS mobile_coverage_state_brand_idx ON fcc.mobile_coverage (state_code, brandname);
 CREATE INDEX IF NOT EXISTS mobile_coverage_release_idx ON fcc.mobile_coverage (release_id);
 
+CREATE TABLE IF NOT EXISTS fcc.mobile_coverage_staging (
+    load_id uuid NOT NULL,
+    state_code text NOT NULL,
+    release_id text NOT NULL DEFAULT 'unknown',
+    frn text,
+    providerid text,
+    brandname text,
+    technology text,
+    mindown numeric,
+    minup numeric,
+    minsignal numeric,
+    environmnt text,
+    source_file text NOT NULL,
+    geom geometry(MultiPolygon, 4326) NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mobile_coverage_staging_load_idx
+    ON fcc.mobile_coverage_staging (load_id);
+
 CREATE TABLE IF NOT EXISTS fcc.mobile_coverage_subdivided (
     coverage_id bigint NOT NULL,
     state_code text NOT NULL,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse, csv, io, os, re, sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from uuid import uuid4
 import geopandas as gpd
 import pandas as pd
 import psycopg
@@ -55,15 +56,23 @@ def normalize(gdf:gpd.GeoDataFrame,state:str,release_id:str,source:str):
     gdf['state_code']=state; gdf['release_id']=release_id; gdf['source_file']=source
     return gdf[['state_code','release_id','frn','providerid','brandname','technology','mindown','minup','minsignal','environmnt','source_file',geom_name]].rename_geometry('geom')
 
-def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:int)->None:
+def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:int,target_table:str,load_id:str|None=None)->None:
+    if target_table not in {'fcc.mobile_coverage','fcc.mobile_coverage_staging'}:
+        raise ValueError(f'Unsupported target table: {target_table}')
+    if target_table == 'fcc.mobile_coverage_staging' and not load_id:
+        raise ValueError('load_id is required for staging loads')
     output=io.StringIO()
     writer=csv.writer(output,lineterminator='\n')
     flush_every=max(chunksize,1)
+    if target_table == 'fcc.mobile_coverage_staging':
+        copy_sql="COPY fcc.mobile_coverage_staging (load_id,state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom) FROM STDIN WITH CSV"
+    else:
+        copy_sql="COPY fcc.mobile_coverage (state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom) FROM STDIN WITH CSV"
     with conn.cursor() as cur:
-        with cur.copy("COPY fcc.mobile_coverage (state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom) FROM STDIN WITH CSV") as copy:
+        with cur.copy(copy_sql) as copy:
             for idx,row in enumerate(gdf.itertuples(index=False,name=None),1):
                 state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom=row
-                writer.writerow([
+                fields=[
                     None if pd.isna(state_code) else state_code,
                     None if pd.isna(release_id) else release_id,
                     None if pd.isna(frn) else frn,
@@ -76,7 +85,8 @@ def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:
                     None if pd.isna(environmnt) else environmnt,
                     None if pd.isna(source_file) else source_file,
                     wkb.dumps(geom,hex=True,srid=4326),
-                ])
+                ]
+                writer.writerow(([load_id] if target_table == 'fcc.mobile_coverage_staging' else []) + fields)
                 if idx % flush_every == 0:
                     output.seek(0)
                     while data:=output.read(1024*1024): copy.write(data)
@@ -85,7 +95,7 @@ def copy_mobile_coverage(gdf:gpd.GeoDataFrame,conn:psycopg.Connection,chunksize:
             while data:=output.read(1024*1024): copy.write(data)
     conn.commit()
 
-def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw:dict[str,str])->int:
+def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw:dict[str,str],target_table:str,load_id:str|None)->int:
     conn=None
     try:
         gdf=gpd.read_file(path,layer=layer,engine='pyogrio')
@@ -93,7 +103,7 @@ def load_layer(path:str,layer:str,state:str,release_id:str,chunksize:int,conn_kw
         conn=psycopg.connect(**conn_kw)
         conn.execute("SELECT set_config('statement_timeout', '0', false)")
         conn.execute("SELECT set_config('idle_in_transaction_session_timeout', '0', false)")
-        copy_mobile_coverage(gdf,conn,chunksize)
+        copy_mobile_coverage(gdf,conn,chunksize,target_table,load_id)
         return len(gdf)
     except Exception as exc:
         if conn is not None and not conn.closed:
@@ -117,11 +127,10 @@ def main():
     paths=[x for x in paths if state_from_name(x) in states]
     if not paths: raise SystemExit('No matching coverage files found.')
     conn_kw=dbkw()
+    load_id=str(uuid4())
     with psycopg.connect(**conn_kw,autocommit=True) as conn:
         conn.execute(Path('sql/001_schema.sql').read_text())
-        if a.replace_states:
-            conn.execute('DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = ANY(%s)',(list(states),))
-            conn.execute('DELETE FROM fcc.mobile_coverage WHERE state_code = ANY(%s)',(list(states),))
+        conn.execute('DELETE FROM fcc.mobile_coverage_staging WHERE load_id = %s',(load_id,))
     imported=0
     jobs=[]
     for path in paths:
@@ -134,12 +143,12 @@ def main():
     print(f'Importing {total_jobs:,} coverage file/layer {unit} with {a.workers} {worker_word}...')
     if a.workers == 1:
         for completed,(path,layer,state,path_name) in enumerate(jobs,start=1):
-            count=load_layer(path,layer,state,a.release_id,a.chunksize,conn_kw)
+            count=load_layer(path,layer,state,a.release_id,a.chunksize,conn_kw,'fcc.mobile_coverage_staging',load_id)
             imported+=count
             print(f'[{completed}/{total_jobs} | {total_jobs-completed} remaining] Imported {count:,} rows from {path_name}:{layer}')
     else:
         with ProcessPoolExecutor(max_workers=a.workers) as executor:
-            futures={executor.submit(load_layer,path,layer,state,a.release_id,a.chunksize,conn_kw):(path_name,layer) for path,layer,state,path_name in jobs}
+            futures={executor.submit(load_layer,path,layer,state,a.release_id,a.chunksize,conn_kw,'fcc.mobile_coverage_staging',load_id):(path_name,layer) for path,layer,state,path_name in jobs}
             for completed,future in enumerate(as_completed(futures),start=1):
                 path_name,layer=futures[future]
                 try:
@@ -148,18 +157,42 @@ def main():
                     raise RuntimeError(f'Failed processing {path_name}:{layer}') from exc
                 imported+=count
                 print(f'[{completed}/{total_jobs} | {total_jobs-completed} remaining] Imported {count:,} rows from {path_name}:{layer}')
-    with psycopg.connect(**conn_kw,autocommit=True) as conn:
+    state_list=sorted(states)
+    with psycopg.connect(**conn_kw) as conn:
+        if a.replace_states:
+            conn.execute(
+                'DELETE FROM fcc.mobile_coverage WHERE state_code = ANY(%s) AND release_id = %s',
+                (state_list,a.release_id),
+            )
+        conn.execute(
+            """INSERT INTO fcc.mobile_coverage (state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom)
+               SELECT state_code,release_id,frn,providerid,brandname,technology,mindown,minup,minsignal,environmnt,source_file,geom
+               FROM fcc.mobile_coverage_staging
+               WHERE load_id = %s""",
+            (load_id,),
+        )
+        conn.execute('DELETE FROM fcc.mobile_coverage_staging WHERE load_id = %s',(load_id,))
+        conn.commit()
         conn.execute('ANALYZE fcc.mobile_coverage')
         if a.subdivide:
             state_count=len(states)
             state_word='state' if state_count == 1 else 'states'
             print(f'Subdividing coverage polygons for {state_count:,} {state_word}...')
-            conn.execute('DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = ANY(%s)',(list(states),))
-            inserted=conn.execute("""INSERT INTO fcc.mobile_coverage_subdivided (coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,geom)
-                SELECT coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,(ST_Dump(ST_Subdivide(geom,256))).geom::geometry(Polygon,4326)
-                FROM fcc.mobile_coverage WHERE state_code = ANY(%s)""",(list(states),))
+            inserted_count=0
+            for state in state_list:
+                conn.execute(
+                    'DELETE FROM fcc.mobile_coverage_subdivided WHERE state_code = %s AND release_id = %s',
+                    (state,a.release_id),
+                )
+                inserted=conn.execute("""INSERT INTO fcc.mobile_coverage_subdivided (coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,geom)
+                    SELECT coverage_id,state_code,release_id,providerid,brandname,technology,mindown,minup,minsignal,environmnt,(ST_Dump(ST_Subdivide(geom,256))).geom::geometry(Polygon,4326)
+                    FROM fcc.mobile_coverage
+                    WHERE state_code = %s
+                      AND release_id = %s""",(state,a.release_id))
+                if inserted.rowcount > 0:
+                    inserted_count += inserted.rowcount
+                conn.commit()
             conn.execute('ANALYZE fcc.mobile_coverage_subdivided')
-            inserted_count=inserted.rowcount
             if inserted_count >= 0:
                 print(f'Coverage polygon subdivision complete. {inserted_count:,} subdivided rows created.')
             else:
