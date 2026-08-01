@@ -143,6 +143,18 @@ docker compose up -d --force-recreate postgis
 
 Ensure Docker Desktop has enough disk capacity to accommodate the larger WAL allowance in addition to the existing data volume.
 
+### Import worker count
+
+`load_postgis.py` defaults to **2 import workers**, which is a conservative choice for local and Docker Desktop workloads (including amd64 emulation on Apple Silicon). Two workers avoid saturating CPU, memory, and WAL generation while still providing parallelism over multi-state imports.
+
+Override the default when running on a well-resourced host:
+
+```bash
+.venv/bin/python load_postgis.py --input addresses.csv --workers 4
+```
+
+Use `--workers 1` for fully sequential, single-connection imports.
+
 ## Troubleshooting
 
 ### FCC API returns 401 or 403
