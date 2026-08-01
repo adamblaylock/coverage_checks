@@ -80,18 +80,24 @@ class Client:
         if direct:urls.append(str(direct))
         urls += [f'downloads/downloadFile/availability/{fid}/{ft}',f'downloads/downloadFile/availability/{fid}/1']
         part=dest.with_suffix(dest.suffix+'.part')
+        errors=[]
         for url in dict.fromkeys(urls):
-            try:
-                existing=part.stat().st_size if part.exists() else 0
-                r=self.req(url,stream=True,headers={'Range':f'bytes={existing}-'} if existing else None)
-                mode='ab' if existing and r.status_code==206 else 'wb'
-                dest.parent.mkdir(parents=True,exist_ok=True)
-                with part.open(mode) as f:
-                    for chunk in r.iter_content(1024*1024):
-                        if chunk:f.write(chunk)
-                part.replace(dest); return
-            except Exception as e: print(f'[download] fid={fid} url={url} err={e}'); continue
-        raise FCCError(f'Unable to download FCC file {fid}')
+            for attempt in range(5):
+                try:
+                    existing=part.stat().st_size if part.exists() else 0
+                    r=self.req(url,stream=True,headers={'Range':f'bytes={existing}-'} if existing else None)
+                    mode='ab' if existing and r.status_code==206 else 'wb'
+                    dest.parent.mkdir(parents=True,exist_ok=True)
+                    with part.open(mode) as f:
+                        for chunk in r.iter_content(1024*1024):
+                            if chunk:f.write(chunk)
+                    part.replace(dest); return
+                except (requests.exceptions.ChunkedEncodingError,requests.exceptions.ConnectionError) as e:
+                    # retriable: resume from .part on next attempt
+                    if attempt<4: time.sleep(min(2**attempt,30)); continue
+                    errors.append(f'{url}: {e}'); break
+                except Exception as e: errors.append(f'{url}: {e}'); break
+        raise FCCError(f'Unable to download FCC file {fid}:\n' + '\n'.join(f'  {e}' for e in errors))
 
 def text(r):return ' '.join(str(v) for v in r.values() if not isinstance(v,(dict,list)) and v is not None).lower()
 def raw_mobile(r):
