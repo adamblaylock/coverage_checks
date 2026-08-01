@@ -131,6 +131,18 @@ data/catalog/                   API catalogs, selected release, and manifests
 data/output/                    Final result CSV files
 ```
 
+## PostGIS performance tuning
+
+The PostGIS service is tuned for bulk loads. The `docker-compose.yml` `command` block starts `postgres` with a larger WAL budget (`max_wal_size=4GB`, `min_wal_size=1GB`), longer checkpoint intervals (`checkpoint_timeout=15min`, `checkpoint_completion_target=0.9`), and WAL compression (`wal_compression=on`). This eliminates the frequent forced-checkpoint warnings that appear during large `COPY` imports and `ST_Subdivide` work.
+
+After pulling this configuration change, apply it without deleting the database volume:
+
+```bash
+docker compose up -d --force-recreate postgis
+```
+
+Ensure Docker Desktop has enough disk capacity to accommodate the larger WAL allowance in addition to the existing data volume.
+
 ## Troubleshooting
 
 ### FCC API returns 401 or 403
