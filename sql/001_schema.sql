@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS fcc.mobile_coverage_subdivided (
 CREATE INDEX IF NOT EXISTS mobile_coverage_sub_geom_gix ON fcc.mobile_coverage_subdivided USING gist (geom);
 CREATE INDEX IF NOT EXISTS mobile_coverage_sub_release_state_brand_idx
     ON fcc.mobile_coverage_subdivided (release_id, state_code, brandname);
+ALTER TABLE fcc.mobile_coverage_subdivided ADD COLUMN IF NOT EXISTS environmnt text;
 
 CREATE TABLE IF NOT EXISTS processing.address_geocode_cache (
     address_hash text PRIMARY KEY,

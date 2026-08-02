@@ -119,10 +119,22 @@ A carrier passes when a qualifying FCC polygon covers the geocoded point and:
 
 ```text
 mindown >= 5 Mbps
-minsignal - 18 dB >= -115 dBm
+estimated_indoor_signal >= -115 dBm
 ```
 
-The 18 dB term is a fixed indoor signal-loss estimate. The resulting indoor minimum of **−115 dBm** is used as a basic device-connectivity screen: it identifies locations where a cellular device would have difficulty attaching to the network at all. It is not a reliable indicator of video-call or streaming quality. For the FCC-reported outdoor `minsignal` this means the polygon must report at least **−97 dBm** before the indoor-loss adjustment is applied.
+The estimated indoor signal is derived from the FCC polygon's `minsignal` using an **environment-aware building-penetration model** driven by the FCC `environmnt` field:
+
+| `environmnt` value | Building-penetration loss | Notes |
+|---|---:|---|
+| `indoor` / `i` / `1` (case-insensitive) | **0 dB** | FCC polygon already represents an indoor prediction; no additional loss applied |
+| `outdoor` / `o` / `2` or any other recognized outdoor value | **12 dB** | Typical building-penetration loss for a cellular signal |
+| Null, empty, or unrecognized value | **12 dB** | Conservative default; treated as outdoor |
+
+The resulting indoor minimum of **−115 dBm** is a basic device-connectivity screen: it identifies locations where a cellular device would have difficulty attaching to the network at all. This is an **optimistic** estimate—it does not guarantee indoor service quality or video-call performance.
+
+For outdoor FCC polygons (or unknown environment) the `minsignal` must be at least **−103 dBm** after the 12 dB building-penetration adjustment. For polygons explicitly marked indoor, no adjustment is applied and the raw `minsignal` must be at least **−115 dBm**.
+
+> **Important:** This is a coverage-screening estimate based on FCC-reported minimum signal values and a simplified propagation model. Actual indoor signal quality depends on building construction, device capability, carrier network load, and many other factors. A `PASS` result does not guarantee reliable indoor service or the ability to sustain a video call.
 
 `ST_Covers` is used so points on polygon boundaries are included.
 
