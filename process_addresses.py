@@ -510,7 +510,13 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                           WHEN coverage.brandname ILIKE 'Verizon%%' THEN 'vzw'
                       END = needed.carrier_code
                   AND coverage.mindown >= 5
-                  AND coverage.minsignal - 18 >= -115
+                  AND (
+                      CASE
+                          WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
+                              THEN coverage.minsignal
+                          ELSE coverage.minsignal - 12
+                      END
+                  ) >= -115
             )
             INSERT INTO processing.address_coverage_cache
             (
