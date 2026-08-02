@@ -66,7 +66,7 @@ That command automatically:
 12. Normalizes and deduplicates addresses.
 13. Reuses cached geocodes and sends only new unique addresses to the Census batch geocoder.
 14. Performs one set-based spatial coverage evaluation.
-15. Reuses cached coverage results for the same address and FCC release.
+15. Reuses cached coverage results only when they match the current coverage-model cache version for the same address and FCC release; stale rows are recomputed automatically.
 16. Exports address fields, carrier `PASS`/`FAIL` results, and per-carrier coverage-audit fields.
 
 ## Optional controls
@@ -115,7 +115,7 @@ The process avoids unnecessary work:
 - Coverage reloads are skipped when the same release/state files were already imported and subdivided.
 - Duplicate addresses are geocoded once.
 - Geocodes persist across files and runs.
-- Coverage results are cached by normalized address and FCC release.
+- Coverage results are cached by normalized address and FCC release, with a cache-model version so stale evaluations are automatically refreshed on the next run.
 - Points are loaded in bulk with PostgreSQL `COPY`.
 - Coverage is evaluated with a set-based PostGIS join against subdivided, indexed polygons.
 

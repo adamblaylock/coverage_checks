@@ -20,6 +20,7 @@ load_dotenv()
 
 CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 REQUIRED_COLUMNS = {"address", "city", "state", "zip"}
+COVERAGE_CACHE_MODEL_VERSION = "env_aware_audit_v1"
 
 STATE_TO_CODE = {
     "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
@@ -460,6 +461,7 @@ def copy_batch(df: pd.DataFrame, conn: psycopg.Connection, batch_id: uuid.UUID) 
 
 
 def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> None:
+    cache_model_version = COVERAGE_CACHE_MODEL_VERSION
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -482,6 +484,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                     WHERE cache.address_hash = a.address_hash
                       AND cache.release_id = %s
                       AND cache.carrier_code = carrier.carrier_code
+                      AND cache.cache_model_version = %s
                 )
             ),
             hits AS
@@ -532,6 +535,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
             INSERT INTO processing.address_coverage_cache
             (
                 address_hash, release_id, carrier_code,
+                cache_model_version,
                 result, best_mindown, best_minsignal, best_estimated_indoor_signal,
                 best_environment, best_penetration_loss_db, technology
             )
@@ -539,6 +543,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                 needed.address_hash,
                 %s,
                 needed.carrier_code,
+                %s,
                 CASE WHEN hits.address_hash IS NULL THEN 'FAIL' ELSE 'PASS' END,
                 hits.mindown,
                 hits.minsignal,
@@ -551,9 +556,26 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
               ON hits.address_hash = needed.address_hash
              AND hits.carrier_code = needed.carrier_code
              AND hits.rank = 1
-            ON CONFLICT (address_hash, release_id, carrier_code) DO NOTHING
+            ON CONFLICT (address_hash, release_id, carrier_code) DO UPDATE
+            SET
+               cache_model_version = EXCLUDED.cache_model_version,
+               result = EXCLUDED.result,
+               best_mindown = EXCLUDED.best_mindown,
+               best_minsignal = EXCLUDED.best_minsignal,
+               best_estimated_indoor_signal = EXCLUDED.best_estimated_indoor_signal,
+               best_environment = EXCLUDED.best_environment,
+               best_penetration_loss_db = EXCLUDED.best_penetration_loss_db,
+               technology = EXCLUDED.technology,
+               evaluated_at = now()
             """,
-            (batch_id, release_id, release_id, release_id),
+            (
+               batch_id,
+               release_id,
+               cache_model_version,
+               release_id,
+               release_id,
+               cache_model_version,
+            ),
         )
     conn.commit()
 
