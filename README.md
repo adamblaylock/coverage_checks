@@ -15,16 +15,16 @@ State names and two-letter abbreviations are accepted. No coordinates, FCC files
 
 ```csv
 address,city,state,zip,att,tmo,vzw,att_estimated_indoor_signal,att_environment,att_penetration_loss_db,tmo_estimated_indoor_signal,tmo_environment,tmo_penetration_loss_db,vzw_estimated_indoor_signal,vzw_environment,vzw_penetration_loss_db
-1 Public Square,Nashville,TN,37201,PASS,FAIL,PASS,-101,outdoor,12,,,,-98,indoor,0
+1 Public Square,Nashville,TN,37201,PASS,UNKNOWN,PASS,-101,outdoor,12,,,,-98,indoor,0
 ```
 
-The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL` fields, then appends per-carrier audit columns:
+The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL`/`UNKNOWN` fields, then appends per-carrier audit columns:
 
 - `<carrier>_estimated_indoor_signal`: estimated indoor signal (dBm) used for evaluation
 - `<carrier>_environment`: FCC `environmnt` value from the selected qualifying polygon
 - `<carrier>_penetration_loss_db`: building-penetration loss applied by the model (`0` for explicit indoor records, otherwise `12`)
 
-When no qualifying coverage polygon exists for a carrier, audit fields remain blank. Geocoding details and coordinates remain internal.
+When no qualifying coverage polygon exists for a carrier, audit fields remain blank. If a carrier result is `UNKNOWN`, blank audit fields mean no qualifying measurement was available (not a confirmed lack of service). Geocoding details and coordinates remain internal.
 
 ## One-time setup
 
@@ -67,7 +67,7 @@ That command automatically:
 13. Reuses cached geocodes and sends only new unique addresses to the Census batch geocoder.
 14. Performs one set-based spatial coverage evaluation.
 15. Reuses cached coverage results only when they match the current coverage-model cache version for the same address and FCC release; stale rows are recomputed automatically.
-16. Exports address fields, carrier `PASS`/`FAIL` results, and per-carrier coverage-audit fields.
+16. Exports address fields, carrier `PASS`/`FAIL`/`UNKNOWN` results, and per-carrier coverage-audit fields.
 
 ## Optional controls
 
@@ -121,7 +121,13 @@ The process avoids unnecessary work:
 
 ## Coverage rule
 
-A carrier passes when a qualifying FCC polygon covers the geocoded point and:
+For each geocoded address and carrier:
+
+- `PASS`: at least one recognized matching FCC polygon covers the point and meets both thresholds.
+- `FAIL`: at least one recognized matching FCC polygon covers the point, none qualify for `PASS`, and available metrics show a conclusive threshold miss.
+- `UNKNOWN`: the address cannot be geocoded, no recognized matching polygon covers the point, or available polygon metrics are insufficient for a conclusive pass/fail decision.
+
+The thresholds for a qualifying polygon are:
 
 ```text
 mindown >= 5 Mbps
@@ -189,7 +195,7 @@ Inspect `data/catalog/unmatched_catalog.json`. The raw catalog is retained so ch
 
 ### Address cannot be geocoded
 
-The row is retained and carrier columns return `FAIL`, because qualifying carrier coverage could not be confirmed. Geocoder diagnostics are stored internally in PostgreSQL.
+The row is retained and carrier columns return `UNKNOWN`, because qualifying carrier coverage cannot be confirmed. Geocoder diagnostics are stored internally in PostgreSQL.
 
 ### Restarting an interrupted run
 
