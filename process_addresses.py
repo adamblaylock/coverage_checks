@@ -20,7 +20,7 @@ load_dotenv()
 
 CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 REQUIRED_COLUMNS = {"address", "city", "state", "zip"}
-COVERAGE_CACHE_MODEL_VERSION = "env_aware_audit_v1"
+COVERAGE_CACHE_MODEL_VERSION = "env_aware_audit_v2"
 
 STATE_TO_CODE = {
     "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
@@ -487,11 +487,12 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                       AND cache.cache_model_version = %s
                 )
             ),
-            hits AS
+            candidates AS
             (
                 SELECT
                     needed.address_hash,
                     needed.carrier_code,
+                    coverage.coverage_id,
                     coverage.technology,
                     coverage.mindown,
                     coverage.minsignal,
@@ -506,12 +507,18 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                             THEN coverage.minsignal
                         ELSE coverage.minsignal - 12
                     END AS estimated_indoor_signal,
-                    row_number() OVER
-                    (
-                        PARTITION BY needed.address_hash, needed.carrier_code
-                        ORDER BY coverage.mindown DESC NULLS LAST,
-                                 coverage.minsignal DESC NULLS LAST
-                    ) AS rank
+                    CASE
+                        WHEN coverage.mindown >= 5
+                             AND (
+                                 CASE
+                                     WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
+                                         THEN coverage.minsignal
+                                     ELSE coverage.minsignal - 12
+                                 END
+                             ) >= -115
+                            THEN true
+                        ELSE false
+                    END AS is_qualifying
                 FROM needed
                 JOIN fcc.mobile_coverage_subdivided coverage
                   ON coverage.state_code = needed.state_code
@@ -523,39 +530,90 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                           WHEN coverage.brandname ILIKE 'T-Mobile%%' THEN 'tmo'
                           WHEN coverage.brandname ILIKE 'Verizon%%' THEN 'vzw'
                       END = needed.carrier_code
-                  AND coverage.mindown >= 5
-                  AND (
-                      CASE
-                          WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
-                              THEN coverage.minsignal
-                          ELSE coverage.minsignal - 12
-                      END
-                  ) >= -115
+            ),
+            evidence AS
+            (
+               SELECT
+                   address_hash,
+                   carrier_code,
+                   count(*) AS candidate_count,
+                   bool_or(is_qualifying) AS has_qualifying_coverage,
+                   bool_or(mindown IS NOT NULL AND mindown < 5) AS has_below_download_threshold,
+                   bool_or(
+                       estimated_indoor_signal IS NOT NULL
+                       AND estimated_indoor_signal < -115
+                   ) AS has_below_indoor_signal_threshold
+               FROM candidates
+               GROUP BY address_hash, carrier_code
+            ),
+            ranked_qualifying AS
+            (
+               SELECT
+                   address_hash,
+                   carrier_code,
+                   technology,
+                   mindown,
+                   minsignal,
+                   environmnt,
+                   penetration_loss_db,
+                   estimated_indoor_signal,
+                   row_number() OVER
+                   (
+                       PARTITION BY address_hash, carrier_code
+                       ORDER BY mindown DESC NULLS LAST,
+                                estimated_indoor_signal DESC NULLS LAST,
+                                minsignal DESC NULLS LAST,
+                                coverage_id ASC
+                   ) AS rank
+               FROM candidates
+               WHERE is_qualifying
             )
             INSERT INTO processing.address_coverage_cache
             (
-                address_hash, release_id, carrier_code,
-                cache_model_version,
-                result, best_mindown, best_minsignal, best_estimated_indoor_signal,
-                best_environment, best_penetration_loss_db, technology
+               address_hash, release_id, carrier_code,
+               cache_model_version,
+               result, best_mindown, best_minsignal, best_estimated_indoor_signal,
+               best_environment, best_penetration_loss_db, technology, result_reason
             )
             SELECT
-                needed.address_hash,
-                %s,
-                needed.carrier_code,
-                %s,
-                CASE WHEN hits.address_hash IS NULL THEN 'FAIL' ELSE 'PASS' END,
-                hits.mindown,
-                hits.minsignal,
-                hits.estimated_indoor_signal,
-                hits.environmnt,
-                hits.penetration_loss_db,
-                hits.technology
+               needed.address_hash,
+               %s,
+               needed.carrier_code,
+               %s,
+               CASE
+                   WHEN evidence.has_qualifying_coverage THEN 'PASS'
+                   WHEN COALESCE(evidence.has_below_download_threshold, false)
+                        OR COALESCE(evidence.has_below_indoor_signal_threshold, false)
+                       THEN 'FAIL'
+                   ELSE 'UNKNOWN'
+               END,
+               ranked_qualifying.mindown,
+               ranked_qualifying.minsignal,
+               ranked_qualifying.estimated_indoor_signal,
+               ranked_qualifying.environmnt,
+               ranked_qualifying.penetration_loss_db,
+               ranked_qualifying.technology,
+               CASE
+                   WHEN evidence.has_qualifying_coverage THEN 'qualifying_coverage'
+                   WHEN COALESCE(evidence.has_below_download_threshold, false)
+                        AND COALESCE(evidence.has_below_indoor_signal_threshold, false)
+                       THEN 'below_download_and_signal_threshold'
+                   WHEN COALESCE(evidence.has_below_download_threshold, false)
+                       THEN 'below_download_threshold'
+                   WHEN COALESCE(evidence.has_below_indoor_signal_threshold, false)
+                       THEN 'below_indoor_signal_threshold'
+                   WHEN COALESCE(evidence.candidate_count, 0) = 0
+                       THEN 'no_matching_polygon'
+                   ELSE 'missing_signal_or_speed'
+               END
             FROM needed
-            LEFT JOIN hits
-              ON hits.address_hash = needed.address_hash
-             AND hits.carrier_code = needed.carrier_code
-             AND hits.rank = 1
+            LEFT JOIN evidence
+              ON evidence.address_hash = needed.address_hash
+             AND evidence.carrier_code = needed.carrier_code
+            LEFT JOIN ranked_qualifying
+              ON ranked_qualifying.address_hash = needed.address_hash
+             AND ranked_qualifying.carrier_code = needed.carrier_code
+             AND ranked_qualifying.rank = 1
             ON CONFLICT (address_hash, release_id, carrier_code) DO UPDATE
             SET
                cache_model_version = EXCLUDED.cache_model_version,
@@ -566,6 +624,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                best_environment = EXCLUDED.best_environment,
                best_penetration_loss_db = EXCLUDED.best_penetration_loss_db,
                technology = EXCLUDED.technology,
+               result_reason = EXCLUDED.result_reason,
                evaluated_at = now()
             """,
             (
@@ -586,12 +645,11 @@ def export_results(
     release_id: str,
     path: Path,
 ) -> None:
-    """Export input address fields, carrier PASS/FAIL, and per-carrier audit values.
+    """Export input address fields, carrier PASS/FAIL/UNKNOWN, and audit values.
 
     Geocoding details, coordinates, cache metadata, and batch identifiers remain
     internal to PostgreSQL and are intentionally excluded from the deliverable.
-    An address that could not be geocoded is exported as FAIL for each carrier
-    because no qualifying coverage polygon could be confirmed.
+    An address that could not be geocoded is exported as UNKNOWN for each carrier.
     """
     query = """
         SELECT
@@ -600,24 +658,24 @@ def export_results(
             batch.state_code AS state,
             batch.zip,
             CASE
-                WHEN batch.geom IS NULL THEN 'FAIL'
+                WHEN batch.geom IS NULL THEN 'UNKNOWN'
                 ELSE coalesce(
                     max(cache.result) FILTER (WHERE cache.carrier_code = 'att'),
-                    'FAIL'
+                    'UNKNOWN'
                 )
             END AS att,
             CASE
-                WHEN batch.geom IS NULL THEN 'FAIL'
+                WHEN batch.geom IS NULL THEN 'UNKNOWN'
                 ELSE coalesce(
                     max(cache.result) FILTER (WHERE cache.carrier_code = 'tmo'),
-                    'FAIL'
+                    'UNKNOWN'
                 )
             END AS tmo,
             CASE
-                WHEN batch.geom IS NULL THEN 'FAIL'
+                WHEN batch.geom IS NULL THEN 'UNKNOWN'
                 ELSE coalesce(
                     max(cache.result) FILTER (WHERE cache.carrier_code = 'vzw'),
-                    'FAIL'
+                    'UNKNOWN'
                 )
             END AS vzw,
             max(cache.best_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'att') AS att_estimated_indoor_signal,
