@@ -492,6 +492,17 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                     coverage.technology,
                     coverage.mindown,
                     coverage.minsignal,
+                    coverage.environmnt,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
+                            THEN 0
+                        ELSE 12
+                    END AS penetration_loss_db,
+                    CASE
+                        WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
+                            THEN coverage.minsignal
+                        ELSE coverage.minsignal - 12
+                    END AS estimated_indoor_signal,
                     row_number() OVER
                     (
                         PARTITION BY needed.address_hash, needed.carrier_code
@@ -521,7 +532,8 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
             INSERT INTO processing.address_coverage_cache
             (
                 address_hash, release_id, carrier_code,
-                result, best_mindown, best_minsignal, technology
+                result, best_mindown, best_minsignal, best_estimated_indoor_signal,
+                best_environment, best_penetration_loss_db, technology
             )
             SELECT
                 needed.address_hash,
@@ -530,6 +542,9 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                 CASE WHEN hits.address_hash IS NULL THEN 'FAIL' ELSE 'PASS' END,
                 hits.mindown,
                 hits.minsignal,
+                hits.estimated_indoor_signal,
+                hits.environmnt,
+                hits.penetration_loss_db,
                 hits.technology
             FROM needed
             LEFT JOIN hits
@@ -549,7 +564,7 @@ def export_results(
     release_id: str,
     path: Path,
 ) -> None:
-    """Export only input address fields and PASS/FAIL carrier results.
+    """Export input address fields, carrier PASS/FAIL, and per-carrier audit values.
 
     Geocoding details, coordinates, cache metadata, and batch identifiers remain
     internal to PostgreSQL and are intentionally excluded from the deliverable.
@@ -582,7 +597,16 @@ def export_results(
                     max(cache.result) FILTER (WHERE cache.carrier_code = 'vzw'),
                     'FAIL'
                 )
-            END AS vzw
+            END AS vzw,
+            max(cache.best_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'att') AS att_estimated_indoor_signal,
+            max(cache.best_environment) FILTER (WHERE cache.carrier_code = 'att') AS att_environment,
+            max(cache.best_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'att') AS att_penetration_loss_db,
+            max(cache.best_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_estimated_indoor_signal,
+            max(cache.best_environment) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_environment,
+            max(cache.best_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_penetration_loss_db,
+            max(cache.best_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_estimated_indoor_signal,
+            max(cache.best_environment) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_environment,
+            max(cache.best_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_penetration_loss_db
         FROM processing.address_batch batch
         LEFT JOIN processing.address_coverage_cache cache
           ON cache.address_hash = batch.address_hash
