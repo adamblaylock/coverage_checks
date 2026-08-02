@@ -124,10 +124,16 @@ CREATE TABLE IF NOT EXISTS processing.address_coverage_cache (
     result text NOT NULL,
     best_mindown numeric,
     best_minsignal numeric,
+    best_estimated_indoor_signal numeric,
+    best_environment text,
+    best_penetration_loss_db numeric,
     technology text,
     evaluated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (address_hash, release_id, carrier_code)
 );
+ALTER TABLE processing.address_coverage_cache ADD COLUMN IF NOT EXISTS best_estimated_indoor_signal numeric;
+ALTER TABLE processing.address_coverage_cache ADD COLUMN IF NOT EXISTS best_environment text;
+ALTER TABLE processing.address_coverage_cache ADD COLUMN IF NOT EXISTS best_penetration_loss_db numeric;
 
 CREATE TABLE IF NOT EXISTS processing.batch_run (
     batch_id uuid PRIMARY KEY,

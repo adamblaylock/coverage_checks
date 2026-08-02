@@ -14,11 +14,17 @@ State names and two-letter abbreviations are accepted. No coordinates, FCC files
 ## Output
 
 ```csv
-address,city,state,zip,att,tmo,vzw
-1 Public Square,Nashville,TN,37201,PASS,FAIL,PASS
+address,city,state,zip,att,tmo,vzw,att_estimated_indoor_signal,att_environment,att_penetration_loss_db,tmo_estimated_indoor_signal,tmo_environment,tmo_penetration_loss_db,vzw_estimated_indoor_signal,vzw_environment,vzw_penetration_loss_db
+1 Public Square,Nashville,TN,37201,PASS,FAIL,PASS,-101,outdoor,12,,,,-98,indoor,0
 ```
 
-The output contains only the address information and `PASS`/`FAIL` for AT&T, T-Mobile, and Verizon. Geocoding details and coordinates remain internal.
+The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL` fields, then appends per-carrier audit columns:
+
+- `<carrier>_estimated_indoor_signal`: estimated indoor signal (dBm) used for evaluation
+- `<carrier>_environment`: FCC `environmnt` value from the selected qualifying polygon
+- `<carrier>_penetration_loss_db`: building-penetration loss applied by the model (`0` for explicit indoor records, otherwise `12`)
+
+When no qualifying coverage polygon exists for a carrier, audit fields remain blank. Geocoding details and coordinates remain internal.
 
 ## One-time setup
 
@@ -61,7 +67,7 @@ That command automatically:
 13. Reuses cached geocodes and sends only new unique addresses to the Census batch geocoder.
 14. Performs one set-based spatial coverage evaluation.
 15. Reuses cached coverage results for the same address and FCC release.
-16. Exports only address fields and carrier `PASS`/`FAIL` results.
+16. Exports address fields, carrier `PASS`/`FAIL` results, and per-carrier coverage-audit fields.
 
 ## Optional controls
 
