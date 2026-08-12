@@ -14,11 +14,11 @@ State names and two-letter abbreviations are accepted. No coordinates, FCC files
 ## Output
 
 ```csv
-address,city,state,zip,att,tmo,vzw,att_reason,tmo_reason,vzw_reason,att_evaluated_mindown,att_evaluated_minup,att_evaluated_minsignal,att_evaluated_indoor_signal,att_evaluated_environment,att_evaluated_penetration_loss_db,att_evaluated_technology,...,att_estimated_indoor_signal,att_environment,att_penetration_loss_db,...
-1 Public Square,Nashville,TN,37201,PASS,UNKNOWN,FAIL,qualifying_coverage,no_matching_polygon,below_download_threshold,5,4,-89,-101,outdoor,12,LTE,...,-101,outdoor,12,...,,,1,,
+address,city,state,zip,att,att_reason,att_evaluated_mindown,att_evaluated_minup,att_evaluated_indoor_signal,att_evaluated_environment,att_evaluated_technology,tmo,tmo_reason,tmo_evaluated_mindown,tmo_evaluated_minup,tmo_evaluated_indoor_signal,tmo_evaluated_environment,tmo_evaluated_technology,vzw,vzw_reason,vzw_evaluated_mindown,vzw_evaluated_minup,vzw_evaluated_indoor_signal,vzw_evaluated_environment,vzw_evaluated_technology
+1 Public Square,Nashville,TN,37201,PASS,qualifying_coverage,5,4,-101,outdoor,LTE,UNKNOWN,no_matching_polygon,,,,,FAIL,below_download_threshold,1,2,-100,outdoor,LTE
 ```
 
-The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL`/`UNKNOWN` result fields, then adds per-carrier reason and evaluated-evidence columns, then the legacy qualifying-audit columns:
+The output keeps the original address plus a compact 7-column group per carrier (`att`, `tmo`, `vzw`): result, reason, and evaluated evidence columns (25 columns total).
 
 ### Result column
 
@@ -42,30 +42,20 @@ The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL`/`UNKN
   - `missing_signal_or_speed` — UNKNOWN: a polygon was found but lacked sufficient metrics.
   - `geocode_unavailable` — address could not be geocoded; all carriers return UNKNOWN.
 
-### Evaluated-evidence columns (new)
+### Evaluated-evidence columns
 
-These columns report the deterministically selected evidence polygon used to explain the result. They are populated for both PASS and FAIL rows:
+These columns report the deterministically selected evidence polygon used to explain the result: qualifying coverage for `PASS`, representative conclusive failure evidence for `FAIL`, and possibly blank values for `UNKNOWN`.
 
 - `<carrier>_evaluated_mindown` — download speed (Mbps) of the evidence polygon.
 - `<carrier>_evaluated_minup` — upload speed (Mbps) of the evidence polygon.
-- `<carrier>_evaluated_minsignal` — raw minimum signal (dBm) of the evidence polygon.
 - `<carrier>_evaluated_indoor_signal` — estimated indoor signal (dBm) after applying building-penetration loss.
 - `<carrier>_evaluated_environment` — FCC `environmnt` value of the evidence polygon.
-- `<carrier>_evaluated_penetration_loss_db` — building-penetration loss applied (`0` for indoor, `12` for outdoor/unknown).
 - `<carrier>_evaluated_technology` — technology (e.g. `LTE`) of the evidence polygon.
 
 Selection rules:
 - **PASS**: the best qualifying polygon (highest download, then best indoor signal, then lowest coverage ID).
 - **FAIL**: the most conclusively failing polygon (most failed criteria, then worst download deficit, then worst signal deficit, then lowest coverage ID).
-- **UNKNOWN**: blank — no polygon could establish the metrics.
-
-### Legacy qualifying-audit columns (PASS only)
-
-These columns retain their original meaning and are populated **only when the result is PASS**. Blank values for FAIL rows do not indicate missing source data — use the evaluated-evidence columns instead.
-
-- `<carrier>_estimated_indoor_signal`: estimated indoor signal (dBm) from the selected qualifying polygon.
-- `<carrier>_environment`: FCC `environmnt` value from the selected qualifying polygon.
-- `<carrier>_penetration_loss_db`: building-penetration loss applied (`0` for indoor records, `12` otherwise).
+- **UNKNOWN**: may be blank — no polygon could establish conclusive evidence.
 
 Geocoding details and coordinates remain internal to PostgreSQL and are not exported.
 
@@ -110,7 +100,7 @@ That command automatically:
 13. Reuses cached geocodes and sends only new unique addresses to the Census batch geocoder.
 14. Performs one set-based spatial coverage evaluation.
 15. Reuses cached coverage results only when they match the current coverage-model cache version for the same address and FCC release; stale rows are recomputed automatically.
-16. Exports address fields, carrier `PASS`/`FAIL`/`UNKNOWN` results, and per-carrier coverage-audit fields.
+16. Exports address fields, carrier `PASS`/`FAIL`/`UNKNOWN` results, carrier reason codes, and compact per-carrier evaluated evidence fields.
 
 ## Optional controls
 
