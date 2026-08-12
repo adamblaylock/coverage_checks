@@ -14,17 +14,60 @@ State names and two-letter abbreviations are accepted. No coordinates, FCC files
 ## Output
 
 ```csv
-address,city,state,zip,att,tmo,vzw,att_estimated_indoor_signal,att_environment,att_penetration_loss_db,tmo_estimated_indoor_signal,tmo_environment,tmo_penetration_loss_db,vzw_estimated_indoor_signal,vzw_environment,vzw_penetration_loss_db
-1 Public Square,Nashville,TN,37201,PASS,UNKNOWN,PASS,-101,outdoor,12,,,,-98,indoor,0
+address,city,state,zip,att,tmo,vzw,att_reason,tmo_reason,vzw_reason,att_evaluated_mindown,att_evaluated_minup,att_evaluated_minsignal,att_evaluated_indoor_signal,att_evaluated_environment,att_evaluated_penetration_loss_db,att_evaluated_technology,...,att_estimated_indoor_signal,att_environment,att_penetration_loss_db,...
+1 Public Square,Nashville,TN,37201,PASS,UNKNOWN,FAIL,qualifying_coverage,no_matching_polygon,below_download_threshold,5,4,-89,-101,outdoor,12,LTE,...,-101,outdoor,12,...,,,1,,
 ```
 
-The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL`/`UNKNOWN` fields, then appends per-carrier audit columns:
+The output keeps the original address plus `att`/`tmo`/`vzw` `PASS`/`FAIL`/`UNKNOWN` result fields, then adds per-carrier reason and evaluated-evidence columns, then the legacy qualifying-audit columns:
 
-- `<carrier>_estimated_indoor_signal`: estimated indoor signal (dBm) used for evaluation
-- `<carrier>_environment`: FCC `environmnt` value from the selected qualifying polygon
-- `<carrier>_penetration_loss_db`: building-penetration loss applied by the model (`0` for explicit indoor records, otherwise `12`)
+### Result column
 
-When no qualifying coverage polygon exists for a carrier, audit fields remain blank. If a carrier result is `UNKNOWN`, blank audit fields mean no qualifying measurement was available (not a confirmed lack of service). Geocoding details and coordinates remain internal.
+- `att`, `tmo`, `vzw` — `PASS`, `FAIL`, or `UNKNOWN` for each carrier.
+  - **PASS** — at least one FCC polygon covers the address and meets all Zoom 720p indoor thresholds (≥2 Mbps down, ≥2 Mbps up, ≥−105 dBm estimated indoor signal).
+  - **FAIL** — an FCC polygon covers the address but at least one known metric falls below a threshold.
+  - **UNKNOWN** — no matching polygon, geocode failed, or no polygon had sufficient metrics to conclusively pass or fail.
+
+### Reason column (new)
+
+- `<carrier>_reason` — stable reason code explaining the result. Examples:
+  - `qualifying_coverage` — PASS: a qualifying polygon was found.
+  - `below_download_threshold` — FAIL: download speed below 2 Mbps.
+  - `below_upload_threshold` — FAIL: upload speed below 2 Mbps.
+  - `below_indoor_signal_threshold` — FAIL: estimated indoor signal below −105 dBm.
+  - `below_download_and_upload_threshold` — FAIL: both download and upload below threshold.
+  - `below_download_and_signal_threshold` — FAIL: download and signal both below threshold.
+  - `below_upload_and_signal_threshold` — FAIL: upload and signal both below threshold.
+  - `below_download_upload_and_signal_threshold` — FAIL: all three metrics below threshold.
+  - `no_matching_polygon` — UNKNOWN: no FCC polygon covers this address for this carrier.
+  - `missing_signal_or_speed` — UNKNOWN: a polygon was found but lacked sufficient metrics.
+  - `geocode_unavailable` — address could not be geocoded; all carriers return UNKNOWN.
+
+### Evaluated-evidence columns (new)
+
+These columns report the deterministically selected evidence polygon used to explain the result. They are populated for both PASS and FAIL rows:
+
+- `<carrier>_evaluated_mindown` — download speed (Mbps) of the evidence polygon.
+- `<carrier>_evaluated_minup` — upload speed (Mbps) of the evidence polygon.
+- `<carrier>_evaluated_minsignal` — raw minimum signal (dBm) of the evidence polygon.
+- `<carrier>_evaluated_indoor_signal` — estimated indoor signal (dBm) after applying building-penetration loss.
+- `<carrier>_evaluated_environment` — FCC `environmnt` value of the evidence polygon.
+- `<carrier>_evaluated_penetration_loss_db` — building-penetration loss applied (`0` for indoor, `12` for outdoor/unknown).
+- `<carrier>_evaluated_technology` — technology (e.g. `LTE`) of the evidence polygon.
+
+Selection rules:
+- **PASS**: the best qualifying polygon (highest download, then best indoor signal, then lowest coverage ID).
+- **FAIL**: the most conclusively failing polygon (most failed criteria, then worst download deficit, then worst signal deficit, then lowest coverage ID).
+- **UNKNOWN**: blank — no polygon could establish the metrics.
+
+### Legacy qualifying-audit columns (PASS only)
+
+These columns retain their original meaning and are populated **only when the result is PASS**. Blank values for FAIL rows do not indicate missing source data — use the evaluated-evidence columns instead.
+
+- `<carrier>_estimated_indoor_signal`: estimated indoor signal (dBm) from the selected qualifying polygon.
+- `<carrier>_environment`: FCC `environmnt` value from the selected qualifying polygon.
+- `<carrier>_penetration_loss_db`: building-penetration loss applied (`0` for indoor records, `12` otherwise).
+
+Geocoding details and coordinates remain internal to PostgreSQL and are not exported.
 
 ## One-time setup
 

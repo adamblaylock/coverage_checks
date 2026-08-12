@@ -62,8 +62,8 @@ class EvaluateCacheVersionTests(unittest.TestCase):
             ),
         )
 
-    def test_cache_model_version_is_zoom_720p_indoor_v1(self):
-        self.assertEqual(process_addresses.COVERAGE_CACHE_MODEL_VERSION, "zoom_720p_indoor_v1")
+    def test_cache_model_version_is_zoom_720p_indoor_v2(self):
+        self.assertEqual(process_addresses.COVERAGE_CACHE_MODEL_VERSION, "zoom_720p_indoor_v2")
 
     def test_evaluate_uses_three_state_logic_and_reason_codes(self):
         conn = _FakeConnection()
@@ -148,18 +148,15 @@ class EvaluateCacheVersionTests(unittest.TestCase):
 
 
 class ExportResultsTests(unittest.TestCase):
-    def test_export_results_defaults_to_unknown_for_missing_geocode_and_cache(self):
+    def _capture_export_query(self) -> str:
         captured: dict[str, object] = {}
-        csv_written = {"value": False}
 
         class _FakeFrame:
             def to_csv(self, path, index=False):
                 Path(path).write_text("address,city,state,zip\n")
-                csv_written["value"] = True
 
         def _fake_read_sql_query(query, conn, params):
             captured["query"] = query
-            captured["params"] = params
             return _FakeFrame()
 
         with TemporaryDirectory() as tmpdir:
@@ -171,16 +168,98 @@ class ExportResultsTests(unittest.TestCase):
                     release_id="2025-12-31",
                     path=output_path,
                 )
+        return str(captured["query"])
 
+    def test_export_results_defaults_to_unknown_for_missing_geocode_and_cache(self):
+        csv_written = {"value": False}
+        orig_helper = self._capture_export_query
+
+        captured_query_holder: list[str] = []
+
+        class _FakeFrame:
+            def to_csv(self, path, index=False):
+                Path(path).write_text("address,city,state,zip\n")
+                csv_written["value"] = True
+
+        def _fake_read_sql_query(query, conn, params):
+            captured_query_holder.append(str(query))
+            return _FakeFrame()
+
+        with TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "out.csv"
+            with patch("process_addresses.pd.read_sql_query", side_effect=_fake_read_sql_query):
+                process_addresses.export_results(
+                    conn=object(),
+                    batch_id=uuid.uuid4(),
+                    release_id="2025-12-31",
+                    path=output_path,
+                )
             self.assertTrue(output_path.exists())
             self.assertTrue(csv_written["value"])
 
-        query = str(captured["query"])
+        query = captured_query_holder[0]
         self.assertIn("WHEN batch.geom IS NULL THEN 'UNKNOWN'", query)
         self.assertIn("coalesce(", query)
         self.assertIn("cache.carrier_code = 'att'),\n                    'UNKNOWN'", query)
         self.assertIn("cache.carrier_code = 'tmo'),\n                    'UNKNOWN'", query)
         self.assertIn("cache.carrier_code = 'vzw'),\n                    'UNKNOWN'", query)
+
+    def test_export_results_includes_reason_columns(self):
+        query = self._capture_export_query()
+        for carrier in ("att", "tmo", "vzw"):
+            self.assertIn(f"{carrier}_reason", query)
+            self.assertIn("geocode_unavailable", query)
+
+    def test_export_results_includes_evaluated_evidence_columns(self):
+        query = self._capture_export_query()
+        for carrier in ("att", "tmo", "vzw"):
+            self.assertIn(f"{carrier}_evaluated_mindown", query)
+            self.assertIn(f"{carrier}_evaluated_minup", query)
+            self.assertIn(f"{carrier}_evaluated_minsignal", query)
+            self.assertIn(f"{carrier}_evaluated_indoor_signal", query)
+            self.assertIn(f"{carrier}_evaluated_environment", query)
+            self.assertIn(f"{carrier}_evaluated_penetration_loss_db", query)
+            self.assertIn(f"{carrier}_evaluated_technology", query)
+
+
+class EvaluateEvidenceColumnsTests(unittest.TestCase):
+    def test_evaluate_includes_ranked_failing_cte(self):
+        conn = _FakeConnection()
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+        query, _ = conn.cursor_instance.executed[0]
+        self.assertIn("ranked_failing", query)
+        self.assertIn("WHERE NOT is_qualifying", query)
+
+    def test_evaluate_persists_evaluated_columns(self):
+        conn = _FakeConnection()
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+        query, _ = conn.cursor_instance.executed[0]
+        for col in (
+            "evaluated_mindown",
+            "evaluated_minup",
+            "evaluated_minsignal",
+            "evaluated_estimated_indoor_signal",
+            "evaluated_environment",
+            "evaluated_penetration_loss_db",
+            "evaluated_technology",
+        ):
+            self.assertIn(col, query, f"Missing column: {col}")
+
+    def test_evaluate_upserts_evaluated_columns(self):
+        conn = _FakeConnection()
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+        query, _ = conn.cursor_instance.executed[0]
+        self.assertIn("evaluated_mindown = EXCLUDED.evaluated_mindown", query)
+        self.assertIn("evaluated_estimated_indoor_signal = EXCLUDED.evaluated_estimated_indoor_signal", query)
+
+    def test_evaluate_ranked_failing_uses_deterministic_ordering(self):
+        """ranked_failing must prioritise most failed criteria then worst deficit."""
+        conn = _FakeConnection()
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+        query, _ = conn.cursor_instance.executed[0]
+        # The ordering score expression must appear in the query
+        self.assertIn("CASE WHEN mindown IS NOT NULL AND mindown < 2 THEN 1 ELSE 0 END", query)
+        self.assertIn("coverage_id ASC", query)
 
 
 if __name__ == "__main__":
