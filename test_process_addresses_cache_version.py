@@ -210,16 +210,19 @@ class ExportResultsTests(unittest.TestCase):
             self.assertIn(f"{carrier}_reason", query)
             self.assertIn("geocode_unavailable", query)
 
-    def test_export_results_includes_evaluated_evidence_columns(self):
+    def test_export_results_includes_compact_evaluated_evidence_columns(self):
         query = self._capture_export_query()
         for carrier in ("att", "tmo", "vzw"):
             self.assertIn(f"{carrier}_evaluated_mindown", query)
             self.assertIn(f"{carrier}_evaluated_minup", query)
-            self.assertIn(f"{carrier}_evaluated_minsignal", query)
             self.assertIn(f"{carrier}_evaluated_indoor_signal", query)
             self.assertIn(f"{carrier}_evaluated_environment", query)
-            self.assertIn(f"{carrier}_evaluated_penetration_loss_db", query)
             self.assertIn(f"{carrier}_evaluated_technology", query)
+            self.assertNotIn(f"{carrier}_evaluated_minsignal", query)
+            self.assertNotIn(f"{carrier}_evaluated_penetration_loss_db", query)
+            self.assertNotIn(f"{carrier}_estimated_indoor_signal", query)
+            self.assertNotIn(f"{carrier}_environment", query)
+            self.assertNotIn(f"{carrier}_penetration_loss_db", query)
 
 
 class EvaluateEvidenceColumnsTests(unittest.TestCase):
