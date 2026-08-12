@@ -62,6 +62,9 @@ class EvaluateCacheVersionTests(unittest.TestCase):
             ),
         )
 
+    def test_cache_model_version_is_zoom_720p_indoor_v1(self):
+        self.assertEqual(process_addresses.COVERAGE_CACHE_MODEL_VERSION, "zoom_720p_indoor_v1")
+
     def test_evaluate_uses_three_state_logic_and_reason_codes(self):
         conn = _FakeConnection()
 
@@ -75,12 +78,73 @@ class EvaluateCacheVersionTests(unittest.TestCase):
         self.assertIn("ELSE 'UNKNOWN'", query)
         self.assertIn("'qualifying_coverage'", query)
         self.assertIn("'below_download_threshold'", query)
+        self.assertIn("'below_upload_threshold'", query)
         self.assertIn("'below_indoor_signal_threshold'", query)
         self.assertIn("'below_download_and_signal_threshold'", query)
+        self.assertIn("'below_download_and_upload_threshold'", query)
+        self.assertIn("'below_upload_and_signal_threshold'", query)
+        self.assertIn("'below_download_upload_and_signal_threshold'", query)
         self.assertIn("'no_matching_polygon'", query)
         self.assertIn("'missing_signal_or_speed'", query)
         self.assertIn("FROM candidates", query)
         self.assertIn("WHERE is_qualifying", query)
+
+    def test_evaluate_uses_zoom_720p_thresholds(self):
+        conn = _FakeConnection()
+
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+
+        query, _ = conn.cursor_instance.executed[0]
+        # Download threshold: 2 Mbps
+        self.assertIn("mindown >= 2", query)
+        self.assertIn("mindown < 2", query)
+        # Upload threshold: 2 Mbps
+        self.assertIn("minup >= 2", query)
+        self.assertIn("minup < 2", query)
+        # Indoor signal threshold: -105 dBm
+        self.assertIn(">= -105", query)
+        self.assertIn("< -105", query)
+        # minup included in candidates
+        self.assertIn("coverage.minup", query)
+        self.assertIn("has_below_upload_threshold", query)
+
+    def test_evaluate_minup_does_not_produce_fail_when_null(self):
+        """Missing minup must not by itself produce FAIL."""
+        conn = _FakeConnection()
+
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+
+        query, _ = conn.cursor_instance.executed[0]
+        # The upload threshold check must guard against NULL with IS NOT NULL
+        self.assertIn("minup IS NOT NULL", query)
+
+    def test_evaluate_null_minup_does_not_block_qualification(self):
+        """A polygon with NULL minup and passing mindown/signal should still qualify."""
+        conn = _FakeConnection()
+
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+
+        query, _ = conn.cursor_instance.executed[0]
+        # is_qualifying must allow NULL minup
+        self.assertIn("coverage.minup IS NULL OR coverage.minup >= 2", query)
+
+    def test_evaluate_mindown_does_not_produce_fail_when_null(self):
+        """Missing mindown must not by itself produce FAIL."""
+        conn = _FakeConnection()
+
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+
+        query, _ = conn.cursor_instance.executed[0]
+        self.assertIn("mindown IS NOT NULL", query)
+
+
+        """Missing mindown must not by itself produce FAIL."""
+        conn = _FakeConnection()
+
+        process_addresses.evaluate(conn, uuid.uuid4(), "2025-12-31")
+
+        query, _ = conn.cursor_instance.executed[0]
+        self.assertIn("mindown IS NOT NULL", query)
 
 
 class ExportResultsTests(unittest.TestCase):
