@@ -121,17 +121,20 @@ The process avoids unnecessary work:
 
 ## Coverage rule
 
+This pipeline screens each geocoded address against FCC mobile coverage polygon data to estimate whether the location can support an **indoor 720p one-to-one Zoom call**. This is a modeling estimate based on FCC-reported minimum signal values and minimum download/upload speeds—it is **not a live throughput or call-quality guarantee**.
+
 For each geocoded address and carrier:
 
-- `PASS`: at least one recognized matching FCC polygon covers the point and meets both thresholds.
-- `FAIL`: at least one recognized matching FCC polygon covers the point, none qualify for `PASS`, and available metrics show a conclusive threshold miss.
-- `UNKNOWN`: the address cannot be geocoded, no recognized matching polygon covers the point, or available polygon metrics are insufficient for a conclusive pass/fail decision.
+- `PASS`: at least one recognized matching FCC polygon covers the point and meets all three thresholds.
+- `FAIL`: at least one recognized matching FCC polygon covers the point, none qualify for `PASS`, and available FCC metrics conclusively show one or more required thresholds are not met.
+- `UNKNOWN`: the address cannot be geocoded, no recognized matching polygon covers the point, or available polygon metrics are insufficient for a conclusive pass/fail decision. Missing `mindown`, `minup`, or `minsignal` alone never produces `FAIL`—without a separate conclusive threshold miss it yields `UNKNOWN`.
 
 The thresholds for a qualifying polygon are:
 
 ```text
-mindown >= 5 Mbps
-estimated_indoor_signal >= -115 dBm
+mindown >= 2 Mbps
+minup   >= 2 Mbps
+estimated_indoor_signal >= -105 dBm
 ```
 
 The estimated indoor signal is derived from the FCC polygon's `minsignal` using an **environment-aware building-penetration model** driven by the FCC `environmnt` field:
@@ -142,11 +145,9 @@ The estimated indoor signal is derived from the FCC polygon's `minsignal` using 
 | `outdoor` / `o` / `2` or any other recognized outdoor value | **12 dB** | Typical building-penetration loss for a cellular signal |
 | Null, empty, or unrecognized value | **12 dB** | Conservative default; treated as outdoor |
 
-The resulting indoor minimum of **−115 dBm** is a basic device-connectivity screen: it identifies locations where a cellular device would have difficulty attaching to the network at all. This is an **optimistic** estimate—it does not guarantee indoor service quality or video-call performance.
+The indoor signal threshold of **−105 dBm** represents a stronger screen than basic device connectivity. For outdoor FCC polygons (or unknown environment) the raw `minsignal` must be at least **−93 dBm** before the 12 dB building-penetration adjustment. For polygons explicitly marked indoor, no adjustment is applied and the raw `minsignal` must be at least **−105 dBm**.
 
-For outdoor FCC polygons (or unknown environment) the `minsignal` must be at least **−103 dBm** after the 12 dB building-penetration adjustment. For polygons explicitly marked indoor, no adjustment is applied and the raw `minsignal` must be at least **−115 dBm**.
-
-> **Important:** This is a coverage-screening estimate based on FCC-reported minimum signal values and a simplified propagation model. Actual indoor signal quality depends on building construction, device capability, carrier network load, and many other factors. A `PASS` result does not guarantee reliable indoor service or the ability to sustain a video call.
+> **Important:** A `PASS` result means FCC data indicates the location *should* support an indoor 720p one-to-one Zoom call based on modeled coverage. Actual indoor signal quality and sustained throughput depend on building construction, device capability, carrier network load, and many other real-world factors. An FCC-based `PASS` is not a guarantee of reliable indoor service or call quality.
 
 `ST_Covers` is used so points on polygon boundaries are included.
 

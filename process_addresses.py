@@ -20,7 +20,7 @@ load_dotenv()
 
 CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 REQUIRED_COLUMNS = {"address", "city", "state", "zip"}
-COVERAGE_CACHE_MODEL_VERSION = "env_aware_audit_v2"
+COVERAGE_CACHE_MODEL_VERSION = "zoom_720p_indoor_v1"
 
 STATE_TO_CODE = {
     "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
@@ -495,6 +495,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                     coverage.coverage_id,
                     coverage.technology,
                     coverage.mindown,
+                    coverage.minup,
                     coverage.minsignal,
                     coverage.environmnt,
                     CASE
@@ -508,14 +509,15 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                         ELSE coverage.minsignal - 12
                     END AS estimated_indoor_signal,
                     CASE
-                        WHEN coverage.mindown >= 5
+                        WHEN coverage.mindown >= 2
+                             AND (coverage.minup IS NULL OR coverage.minup >= 2)
                              AND (
                                  CASE
                                      WHEN LOWER(TRIM(COALESCE(coverage.environmnt, ''))) IN ('indoor', 'i', '1')
                                          THEN coverage.minsignal
                                      ELSE coverage.minsignal - 12
                                  END
-                             ) >= -115
+                             ) >= -105
                             THEN true
                         ELSE false
                     END AS is_qualifying
@@ -538,10 +540,11 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                    carrier_code,
                    count(*) AS candidate_count,
                    bool_or(is_qualifying) AS has_qualifying_coverage,
-                   bool_or(mindown IS NOT NULL AND mindown < 5) AS has_below_download_threshold,
+                   bool_or(mindown IS NOT NULL AND mindown < 2) AS has_below_download_threshold,
+                   bool_or(minup IS NOT NULL AND minup < 2) AS has_below_upload_threshold,
                    bool_or(
                        estimated_indoor_signal IS NOT NULL
-                       AND estimated_indoor_signal < -115
+                       AND estimated_indoor_signal < -105
                    ) AS has_below_indoor_signal_threshold
                FROM candidates
                GROUP BY address_hash, carrier_code
@@ -583,6 +586,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                CASE
                    WHEN evidence.has_qualifying_coverage THEN 'PASS'
                    WHEN COALESCE(evidence.has_below_download_threshold, false)
+                        OR COALESCE(evidence.has_below_upload_threshold, false)
                         OR COALESCE(evidence.has_below_indoor_signal_threshold, false)
                        THEN 'FAIL'
                    ELSE 'UNKNOWN'
@@ -596,10 +600,22 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                CASE
                    WHEN evidence.has_qualifying_coverage THEN 'qualifying_coverage'
                    WHEN COALESCE(evidence.has_below_download_threshold, false)
+                        AND COALESCE(evidence.has_below_upload_threshold, false)
+                        AND COALESCE(evidence.has_below_indoor_signal_threshold, false)
+                       THEN 'below_download_upload_and_signal_threshold'
+                   WHEN COALESCE(evidence.has_below_download_threshold, false)
+                        AND COALESCE(evidence.has_below_upload_threshold, false)
+                       THEN 'below_download_and_upload_threshold'
+                   WHEN COALESCE(evidence.has_below_download_threshold, false)
                         AND COALESCE(evidence.has_below_indoor_signal_threshold, false)
                        THEN 'below_download_and_signal_threshold'
+                   WHEN COALESCE(evidence.has_below_upload_threshold, false)
+                        AND COALESCE(evidence.has_below_indoor_signal_threshold, false)
+                       THEN 'below_upload_and_signal_threshold'
                    WHEN COALESCE(evidence.has_below_download_threshold, false)
                        THEN 'below_download_threshold'
+                   WHEN COALESCE(evidence.has_below_upload_threshold, false)
+                       THEN 'below_upload_threshold'
                    WHEN COALESCE(evidence.has_below_indoor_signal_threshold, false)
                        THEN 'below_indoor_signal_threshold'
                    WHEN COALESCE(evidence.candidate_count, 0) = 0
