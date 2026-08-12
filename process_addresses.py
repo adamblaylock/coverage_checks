@@ -20,7 +20,7 @@ load_dotenv()
 
 CENSUS_BATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressbatch"
 REQUIRED_COLUMNS = {"address", "city", "state", "zip"}
-COVERAGE_CACHE_MODEL_VERSION = "zoom_720p_indoor_v1"
+COVERAGE_CACHE_MODEL_VERSION = "zoom_720p_indoor_v2"
 
 STATE_TO_CODE = {
     "ALABAMA": "AL", "ALASKA": "AK", "ARIZONA": "AZ", "ARKANSAS": "AR",
@@ -556,6 +556,7 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                    carrier_code,
                    technology,
                    mindown,
+                   minup,
                    minsignal,
                    environmnt,
                    penetration_loss_db,
@@ -570,13 +571,49 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                    ) AS rank
                FROM candidates
                WHERE is_qualifying
+            ),
+            ranked_failing AS
+            (
+               SELECT
+                   address_hash,
+                   carrier_code,
+                   technology,
+                   mindown,
+                   minup,
+                   minsignal,
+                   environmnt,
+                   penetration_loss_db,
+                   estimated_indoor_signal,
+                   row_number() OVER
+                   (
+                       PARTITION BY address_hash, carrier_code
+                       ORDER BY
+                           (CASE WHEN mindown IS NOT NULL AND mindown < 2 THEN 1 ELSE 0 END
+                            + CASE WHEN minup IS NOT NULL AND minup < 2 THEN 1 ELSE 0 END
+                            + CASE WHEN estimated_indoor_signal IS NOT NULL
+                                        AND estimated_indoor_signal < -105 THEN 1 ELSE 0 END
+                           ) DESC,
+                           mindown ASC NULLS LAST,
+                           estimated_indoor_signal ASC NULLS LAST,
+                           coverage_id ASC
+                   ) AS rank
+               FROM candidates
+               WHERE NOT is_qualifying
+                 AND (
+                     (mindown IS NOT NULL AND mindown < 2)
+                     OR (minup IS NOT NULL AND minup < 2)
+                     OR (estimated_indoor_signal IS NOT NULL AND estimated_indoor_signal < -105)
+                 )
             )
             INSERT INTO processing.address_coverage_cache
             (
                address_hash, release_id, carrier_code,
                cache_model_version,
                result, best_mindown, best_minsignal, best_estimated_indoor_signal,
-               best_environment, best_penetration_loss_db, technology, result_reason
+               best_environment, best_penetration_loss_db, technology, result_reason,
+               evaluated_mindown, evaluated_minup, evaluated_minsignal,
+               evaluated_estimated_indoor_signal, evaluated_environment,
+               evaluated_penetration_loss_db, evaluated_technology
             )
             SELECT
                needed.address_hash,
@@ -621,7 +658,16 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                    WHEN COALESCE(evidence.candidate_count, 0) = 0
                        THEN 'no_matching_polygon'
                    ELSE 'missing_signal_or_speed'
-               END
+               END,
+               COALESCE(ranked_qualifying.mindown, ranked_failing.mindown),
+               COALESCE(ranked_qualifying.minup, ranked_failing.minup),
+               COALESCE(ranked_qualifying.minsignal, ranked_failing.minsignal),
+               COALESCE(ranked_qualifying.estimated_indoor_signal,
+                        ranked_failing.estimated_indoor_signal),
+               COALESCE(ranked_qualifying.environmnt, ranked_failing.environmnt),
+               COALESCE(ranked_qualifying.penetration_loss_db,
+                        ranked_failing.penetration_loss_db),
+               COALESCE(ranked_qualifying.technology, ranked_failing.technology)
             FROM needed
             LEFT JOIN evidence
               ON evidence.address_hash = needed.address_hash
@@ -630,6 +676,10 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
               ON ranked_qualifying.address_hash = needed.address_hash
              AND ranked_qualifying.carrier_code = needed.carrier_code
              AND ranked_qualifying.rank = 1
+            LEFT JOIN ranked_failing
+              ON ranked_failing.address_hash = needed.address_hash
+             AND ranked_failing.carrier_code = needed.carrier_code
+             AND ranked_failing.rank = 1
             ON CONFLICT (address_hash, release_id, carrier_code) DO UPDATE
             SET
                cache_model_version = EXCLUDED.cache_model_version,
@@ -641,6 +691,13 @@ def evaluate(conn: psycopg.Connection, batch_id: uuid.UUID, release_id: str) -> 
                best_penetration_loss_db = EXCLUDED.best_penetration_loss_db,
                technology = EXCLUDED.technology,
                result_reason = EXCLUDED.result_reason,
+               evaluated_mindown = EXCLUDED.evaluated_mindown,
+               evaluated_minup = EXCLUDED.evaluated_minup,
+               evaluated_minsignal = EXCLUDED.evaluated_minsignal,
+               evaluated_estimated_indoor_signal = EXCLUDED.evaluated_estimated_indoor_signal,
+               evaluated_environment = EXCLUDED.evaluated_environment,
+               evaluated_penetration_loss_db = EXCLUDED.evaluated_penetration_loss_db,
+               evaluated_technology = EXCLUDED.evaluated_technology,
                evaluated_at = now()
             """,
             (
@@ -694,6 +751,39 @@ def export_results(
                     'UNKNOWN'
                 )
             END AS vzw,
+            CASE
+                WHEN batch.geom IS NULL THEN 'geocode_unavailable'
+                ELSE max(cache.result_reason) FILTER (WHERE cache.carrier_code = 'att')
+            END AS att_reason,
+            CASE
+                WHEN batch.geom IS NULL THEN 'geocode_unavailable'
+                ELSE max(cache.result_reason) FILTER (WHERE cache.carrier_code = 'tmo')
+            END AS tmo_reason,
+            CASE
+                WHEN batch.geom IS NULL THEN 'geocode_unavailable'
+                ELSE max(cache.result_reason) FILTER (WHERE cache.carrier_code = 'vzw')
+            END AS vzw_reason,
+            max(cache.evaluated_mindown) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_mindown,
+            max(cache.evaluated_minup) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_minup,
+            max(cache.evaluated_minsignal) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_minsignal,
+            max(cache.evaluated_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_indoor_signal,
+            max(cache.evaluated_environment) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_environment,
+            max(cache.evaluated_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_penetration_loss_db,
+            max(cache.evaluated_technology) FILTER (WHERE cache.carrier_code = 'att') AS att_evaluated_technology,
+            max(cache.evaluated_mindown) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_mindown,
+            max(cache.evaluated_minup) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_minup,
+            max(cache.evaluated_minsignal) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_minsignal,
+            max(cache.evaluated_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_indoor_signal,
+            max(cache.evaluated_environment) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_environment,
+            max(cache.evaluated_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_penetration_loss_db,
+            max(cache.evaluated_technology) FILTER (WHERE cache.carrier_code = 'tmo') AS tmo_evaluated_technology,
+            max(cache.evaluated_mindown) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_mindown,
+            max(cache.evaluated_minup) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_minup,
+            max(cache.evaluated_minsignal) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_minsignal,
+            max(cache.evaluated_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_indoor_signal,
+            max(cache.evaluated_environment) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_environment,
+            max(cache.evaluated_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_penetration_loss_db,
+            max(cache.evaluated_technology) FILTER (WHERE cache.carrier_code = 'vzw') AS vzw_evaluated_technology,
             max(cache.best_estimated_indoor_signal) FILTER (WHERE cache.carrier_code = 'att') AS att_estimated_indoor_signal,
             max(cache.best_environment) FILTER (WHERE cache.carrier_code = 'att') AS att_environment,
             max(cache.best_penetration_loss_db) FILTER (WHERE cache.carrier_code = 'att') AS att_penetration_loss_db,
