@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 
@@ -47,8 +49,23 @@ def discover_input_files(input_dir: Path) -> list[Path]:
     return sorted(files, key=lambda path: (-path.stat().st_size, path.name))
 
 
+def extract_state_code(input_path: Path) -> str:
+    """Extract the state code from the input filename.
+
+    Expects a filename ending in _XX.csv where XX is a two-letter state code
+    (e.g. coverage_check_national_20260831_NJ.csv -> NJ).
+    Falls back to the full stem if no match is found.
+    """
+    match = re.search(r"_([A-Z]{2})$", input_path.stem, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return input_path.stem
+
+
 def output_path_for(input_path: Path, output_dir: Path) -> Path:
-    return output_dir / f"{input_path.stem}_coverage_results.csv"
+    state = extract_state_code(input_path)
+    today = date.today().strftime("%Y%m%d")
+    return output_dir / f"coverage_check_{state}_{today}.csv"
 
 
 def print_file_summary(files: list[Path]) -> None:
