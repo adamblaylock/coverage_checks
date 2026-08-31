@@ -73,11 +73,15 @@ def purge_directory(path: Path) -> None:
 def empty_macos_trash() -> None:
     if sys.platform != "darwin":
         return
-    trash_dir = Path.home() / ".Trash"
-    if not trash_dir.is_dir():
-        return
-    purge_directory(trash_dir)
-    print("Emptied macOS Trash")
+    try:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "Finder" to empty trash'],
+            check=True,
+            capture_output=True,
+        )
+        print("Emptied macOS Trash")
+    except Exception as exc:
+        print(f"Warning: could not empty macOS Trash: {exc}")
 
 
 def cleanup_artifacts(coverage_root: Path, download_dir: Path) -> None:
