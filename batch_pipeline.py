@@ -171,10 +171,11 @@ def run_batch(args: argparse.Namespace, files: list[Path]) -> list[BatchResult]:
             )
             print(f"Complete: {output_path} (release {release})")
             success = True
-        except subprocess.CalledProcessError as exc:
+        except Exception as exc:
             error = str(exc)
             print(f"ERROR: {input_path.name}: {exc}")
-        cleanup_artifacts(args.coverage_root, args.download_dir)
+        finally:
+            cleanup_artifacts(args.coverage_root, args.download_dir)
         results.append(
             BatchResult(
                 input_path=input_path,

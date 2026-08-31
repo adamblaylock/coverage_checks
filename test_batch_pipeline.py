@@ -102,7 +102,7 @@ class RunBatchTests(unittest.TestCase):
 
             with patch("batch_pipeline.run") as run_mock, patch(
                 "batch_pipeline.run_pipeline_for_file",
-                side_effect=["2025-12-31", subprocess.CalledProcessError(1, ["boom"])],
+                side_effect=["2025/12/31", subprocess.CalledProcessError(1, ["boom"])],
             ) as pipeline_mock, patch("batch_pipeline.cleanup_artifacts") as cleanup_mock:
                 exit_code = batch_pipeline.main(
                     ["--input-dir", str(input_dir), "--output-dir", str(output_dir)]
