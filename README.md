@@ -122,6 +122,14 @@ Run only the FCC synchronization stage:
 make sync INPUT=addresses.csv
 ```
 
+Run a folder of CSVs largest-to-smallest, writing one output CSV per input and purging downloads/coverage between files:
+
+```bash
+.venv/bin/python batch_pipeline.py \
+  --input-dir path/to/address-csvs \
+  --output-dir data/output
+```
+
 Run only the PostGIS coverage import with a specific worker count:
 
 ```bash
